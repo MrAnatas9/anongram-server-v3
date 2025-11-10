@@ -12,61 +12,183 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Чистая база данных
+// 🗄️ ПОЛНАЯ БАЗА ДАННЫХ ДЛЯ ANONGRAM
 let data = {
   users: [],
-  messages: [],
+  messages: {
+    general: [], // Общий чат
+    archive: [], // Архив
+    favorite: [] // Избранное
+  },
+  tasks: [],
+  notifications: [],
   professions: [
-    { id: 1, name: 'Художник', level: 1 },
-    { id: 2, name: 'Фотограф', level: 1 },
-    { id: 3, name: 'Писатель', level: 1 },
-    { id: 4, name: 'Мемодел', level: 1 },
-    { id: 5, name: 'Библиотекарь', level: 1 },
-    { id: 6, name: 'Тестер', level: 1 }
+    // Уровень 1
+    { id: 1, name: '🎨 Художник', level: 1, description: 'Создание стикеров и оформления' },
+    { id: 2, name: '📷 Фотограф', level: 1, description: 'Фотоотчеты и мемы' },
+    { id: 3, name: '✍️ Писатель', level: 1, description: 'Посты и статьи' },
+    { id: 4, name: '😂 Мемодел', level: 1, description: 'Развлекательный контент' },
+    { id: 5, name: '📚 Библиотекарь', level: 1, description: 'Модерация файлов' },
+    { id: 6, name: '🧪 Тестер', level: 1, description: 'Тестирование функций' },
+    
+    // Уровень 2
+    { id: 7, name: '🎵 Музыкант', level: 2, description: 'Аудиоконтент' },
+    { id: 8, name: '📋 Организатор', level: 2, description: 'Ивенты и мероприятия' },
+    { id: 9, name: '📜 Историк', level: 2, description: 'Архив сообщества' },
+    { id: 10, name: '📰 Сотрудник СМИ', level: 2, description: 'Новости и репортажи' },
+    { id: 11, name: '📊 Аналитик', level: 2, description: 'Статистика и аналитика' },
+    
+    // Уровень 3
+    { id: 12, name: '💻 Программист', level: 3, description: 'Боты и скрипты' },
+    { id: 13, name: '🎭 Мастер РП', level: 3, description: 'Ролевые игры' },
+    { id: 14, name: '👥 Вербовщик', level: 3, description: 'Привлечение участников' },
+    { id: 15, name: '⚖️ Адвокат', level: 3, description: 'Решение споров' },
+    
+    // Уровень 4
+    { id: 16, name: '🐉 Мастер ДнД', level: 4, description: 'Сложные ролевые игры' },
+    { id: 17, name: '🧑‍⚖️ Судья', level: 4, description: 'Арбитраж конфликтов' },
+    
+    // Уровень 5
+    { id: 18, name: '🎪 Ивент-менеджер', level: 5, description: 'Крупные мероприятия' },
+    { id: 19, name: '🔍 Рекрутер', level: 5, description: 'Поиск талантов' },
+    { id: 20, name: '📢 Медиа-менеджер', level: 5, description: 'Управление медиа' }
   ],
-  verificationCodes: {}, // Для 2FA кодов
-  sessions: {} // Активные сессии
+  verificationCodes: {},
+  sessions: {},
+  activeConnections: new Map()
 };
 
-// Генерация 6-значного кода
+// 🔧 УТИЛИТЫ
 function generateVerificationCode() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-// WebSocket
-wss.on('connection', (ws) => {
-  console.log('🔗 Новое WebSocket подключение');
+function generateId() {
+  return Date.now().toString() + Math.random().toString(36).substr(2, 9);
+}
+
+// 🔗 WEBSOCKET - РЕАЛЬНОЕ ВРЕМЯ
+wss.on('connection', (ws, req) => {
+  const connectionId = generateId();
+  console.log('🔗 Новое WebSocket подключение:', connectionId);
   
+  data.activeConnections.set(connectionId, ws);
+
   ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
-      wss.clients.forEach(client => {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify(data));
-        }
-      });
+      console.log('📨 WebSocket сообщение:', data);
+      
+      // Обрабатываем разные типы сообщений
+      switch (data.type) {
+        case 'send_message':
+          handleNewMessage(data);
+          break;
+        case 'typing_start':
+          broadcastTyping(data.chatId, data.username, true);
+          break;
+        case 'typing_stop':
+          broadcastTyping(data.chatId, data.username, false);
+          break;
+        case 'user_online':
+          broadcastUserStatus(data.userId, true);
+          break;
+      }
     } catch (error) {
-      console.error('Ошибка WebSocket:', error);
+      console.error('❌ Ошибка WebSocket:', error);
+    }
+  });
+
+  ws.on('close', () => {
+    console.log('❌ WebSocket отключен:', connectionId);
+    data.activeConnections.delete(connectionId);
+  });
+
+  // Приветственное сообщение
+  ws.send(JSON.stringify({
+    type: 'connection_established',
+    message: 'WebSocket подключен к Anongram',
+    connectionId: connectionId
+  }));
+});
+
+// 📢 ФУНКЦИИ РАССЫЛКИ
+function broadcastToAll(message) {
+  data.activeConnections.forEach((ws, id) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(message));
+    }
+  });
+}
+
+function broadcastToChat(chatId, message) {
+  data.activeConnections.forEach((ws, id) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        ...message,
+        chatId: chatId
+      }));
+    }
+  });
+}
+
+function broadcastTyping(chatId, username, isTyping) {
+  broadcastToChat(chatId, {
+    type: 'user_typing',
+    username: username,
+    isTyping: isTyping,
+    timestamp: Date.now()
+  });
+}
+
+function broadcastUserStatus(userId, isOnline) {
+  broadcastToAll({
+    type: 'user_status',
+    userId: userId,
+    isOnline: isOnline,
+    timestamp: Date.now()
+  });
+}
+
+// 🚀 API ROUTES
+
+// 📊 ГЛАВНАЯ СТРАНИЦА
+app.get('/', (req, res) => {
+  res.json({
+    success: true,
+    message: '🚀 Anongram Server v3.0 - Полная версия',
+    version: '3.0.0',
+    timestamp: new Date().toISOString(),
+    statistics: {
+      users: data.users.length,
+      online: data.activeConnections.size,
+      messages: Object.values(data.messages).flat().length,
+      tasks: data.tasks.length
+    },
+    endpoints: {
+      'GET /': 'Информация о сервере',
+      'POST /api/auth/register': 'Регистрация пользователя',
+      'POST /api/auth/login': 'Вход в систему',
+      'GET /api/users': 'Список пользователей',
+      'GET /api/professions': 'Все профессии',
+      'POST /api/professions/select': 'Выбор профессии',
+      'GET /api/messages/:chatId': 'Получить сообщения чата',
+      'POST /api/messages': 'Отправить сообщение',
+      'GET /api/tasks': 'Получить задания',
+      'POST /api/tasks': 'Создать задание',
+      'POST /api/tasks/complete': 'Выполнить задание',
+      'GET /api/notifications/:userId': 'Получить уведомления',
+      'POST /api/notifications': 'Отправить уведомление'
     }
   });
 });
 
-// API Routes
-app.get('/', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    message: 'Anongram Server',
-    users: data.users.length,
-    online: Object.keys(data.sessions).length
-  });
-});
-
-// Регистрация нового пользователя
-app.post('/api/register', (req, res) => {
+// 👤 АУТЕНТИФИКАЦИЯ
+app.post('/api/auth/register', (req, res) => {
   const { username, code } = req.body;
-  
+
   console.log('📝 Регистрация:', username);
-  
+
   if (!username || !code) {
     return res.status(400).json({ error: 'Заполните никнейм и код доступа' });
   }
@@ -80,7 +202,7 @@ app.post('/api/register', (req, res) => {
   }
 
   // Проверяем занят ли никнейм
-  const usernameExists = data.users.find(user => 
+  const usernameExists = data.users.find(user =>
     user.username.toLowerCase() === username.toLowerCase()
   );
   if (usernameExists) {
@@ -88,247 +210,353 @@ app.post('/api/register', (req, res) => {
   }
 
   // Проверяем занят ли код доступа
-  const codeExists = data.users.find(user => user.code === code);
+  const codeExists = data.users.find(user => user.accessCode === code);
   if (codeExists) {
     return res.status(400).json({ error: 'Этот код доступа уже используется' });
   }
 
   // Создаем пользователя
   const newUser = {
-    id: data.users.length + 1,
+    id: generateId(),
     username: username,
-    code: code,
+    accessCode: code,
     level: 1,
+    experience: 0,
     coins: 100,
-    profession: 'Новичок',
-    twoFACode: generateVerificationCode(), // Код для 2FA
-    devices: [], // Список устройств
-    createdAt: new Date().toISOString()
+    professions: [],
+    selectedProfessions: [],
+    avatar: null,
+    bio: '',
+    isOnline: false,
+    lastSeen: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    devices: []
   };
 
   data.users.push(newUser);
-  
-  console.log('✅ Новый пользователь:', username, '2FA код:', newUser.twoFACode);
-  
-  res.json({ 
-    success: true, 
+
+  console.log('✅ Новый пользователь:', username);
+
+  res.json({
+    success: true,
     user: {
       id: newUser.id,
       username: newUser.username,
       level: newUser.level,
       coins: newUser.coins,
-      profession: newUser.profession
-    },
-    twoFACode: newUser.twoFACode // Отправляем 2FA код
+      experience: newUser.experience
+    }
   });
 });
 
-// Первый этап входа - проверка кода доступа
-app.post('/api/login', (req, res) => {
+app.post('/api/auth/login', (req, res) => {
   const { username, code } = req.body;
-  
+
   console.log('🔐 Попытка входа:', username);
-  
+
   if (!username || !code) {
     return res.status(400).json({ error: 'Заполните никнейм и код доступа' });
   }
 
   // Ищем пользователя
-  const user = data.users.find(u => 
-    u.username.toLowerCase() === username.toLowerCase() && 
-    u.code === code
+  const user = data.users.find(u =>
+    u.username.toLowerCase() === username.toLowerCase() &&
+    u.accessCode === code
   );
 
   if (!user) {
     return res.status(400).json({ error: 'Неверный никнейм или код доступа' });
   }
 
-  // Генерируем временный код для 2FA
-  const tempCode = generateVerificationCode();
-  data.verificationCodes[username] = {
-    code: tempCode,
-    userId: user.id,
-    expires: Date.now() + 10 * 60 * 1000 // 10 минут
-  };
-
-  console.log('📱 2FA код для', username, ':', tempCode);
-  
-  res.json({ 
-    success: true,
-    requires2FA: true,
-    message: 'Требуется подтверждение входа',
-    twoFACode: tempCode // Отправляем код для подтверждения
-  });
-});
-
-// Второй этап - подтверждение 2FA
-app.post('/api/verify-2fa', (req, res) => {
-  const { username, code, twoFACode } = req.body;
-  
-  console.log('🔒 Подтверждение 2FA для:', username);
-  
-  if (!username || !code || !twoFACode) {
-    return res.status(400).json({ error: 'Заполните все поля' });
-  }
-
-  // Проверяем временный код
-  const verification = data.verificationCodes[username];
-  if (!verification || verification.code !== twoFACode) {
-    return res.status(400).json({ error: 'Неверный код подтверждения' });
-  }
-
-  if (Date.now() > verification.expires) {
-    delete data.verificationCodes[username];
-    return res.status(400).json({ error: 'Код подтверждения устарел' });
-  }
-
-  const user = data.users.find(u => u.id === verification.userId);
-  if (!user) {
-    return res.status(400).json({ error: 'Пользователь не найден' });
-  }
+  // Обновляем статус
+  user.isOnline = true;
+  user.lastSeen = new Date().toISOString();
 
   // Создаем сессию
-  const sessionId = Math.random().toString(36).substring(2);
+  const sessionId = generateId();
   data.sessions[sessionId] = {
     userId: user.id,
     username: user.username,
-    createdAt: new Date().toISOString(),
-    device: req.headers['user-agent'] || 'Unknown'
+    createdAt: new Date().toISOString()
   };
 
-  // Добавляем устройство если его нет
-  const deviceExists = user.devices.find(device => device.sessionId === sessionId);
-  if (!deviceExists) {
-    user.devices.push({
-      sessionId: sessionId,
-      lastLogin: new Date().toISOString(),
-      userAgent: req.headers['user-agent'] || 'Unknown'
-    });
-  }
+  // Уведомляем о входе
+  broadcastUserStatus(user.id, true);
 
-  // Удаляем временный код
-  delete data.verificationCodes[username];
+  console.log('✅ Успешный вход:', user.username);
 
-  console.log('✅ Успешный вход:', user.username, 'Сессия:', sessionId);
-  
-  res.json({ 
-    success: true, 
+  res.json({
+    success: true,
     user: {
       id: user.id,
       username: user.username,
       level: user.level,
       coins: user.coins,
-      profession: user.profession
+      experience: user.experience,
+      professions: user.selectedProfessions
     },
     sessionId: sessionId
   });
 });
 
-// Проверка сессии
-app.post('/api/check-session', (req, res) => {
-  const { sessionId } = req.body;
-  
-  if (!sessionId) {
-    return res.status(400).json({ error: 'Сессия не найдена' });
-  }
-
-  const session = data.sessions[sessionId];
-  if (!session) {
-    return res.status(400).json({ error: 'Сессия устарела' });
-  }
-
-  const user = data.users.find(u => u.id === session.userId);
-  if (!user) {
-    return res.status(400).json({ error: 'Пользователь не найден' });
-  }
-
-  res.json({ 
-    success: true, 
-    user: {
-      id: user.id,
-      username: user.username,
-      level: user.level,
-      coins: user.coins,
-      profession: user.profession
-    }
-  });
-});
-
-// Получение списка пользователей
+// 👥 ПОЛЬЗОВАТЕЛИ
 app.get('/api/users', (req, res) => {
   const users = data.users.map(user => ({
     id: user.id,
     username: user.username,
     level: user.level,
-    profession: user.profession
+    coins: user.coins,
+    isOnline: user.isOnline,
+    lastSeen: user.lastSeen,
+    professions: user.selectedProfessions
   }));
-  res.json(users);
-});
-
-// Получение профессий
-app.get('/api/professions', (req, res) => {
-  res.json(data.professions);
-});
-
-// Выбор профессии
-app.post('/api/select-profession', (req, res) => {
-  const { userId, professionId } = req.body;
   
+  res.json({
+    success: true,
+    users: users,
+    total: users.length,
+    online: users.filter(u => u.isOnline).length
+  });
+});
+
+// 🎭 ПРОФЕССИИ
+app.get('/api/professions', (req, res) => {
+  res.json({
+    success: true,
+    professions: data.professions
+  });
+});
+
+app.post('/api/professions/select', (req, res) => {
+  const { userId, professionId } = req.body;
+
   const user = data.users.find(u => u.id === userId);
   const profession = data.professions.find(p => p.id === professionId);
-  
+
   if (!user || !profession) {
     return res.status(400).json({ error: 'Пользователь или профессия не найдены' });
   }
-  
-  user.profession = profession.name;
-  res.json({ success: true, profession: profession.name });
-});
 
-// Отправка сообщения
-app.post('/api/send-message', (req, res) => {
-  const { userId, text, chatId } = req.body;
-  
-  const user = data.users.find(u => u.id === userId);
-  if (!user) {
-    return res.status(400).json({ error: 'Пользователь не найден' });
+  if (profession.level > user.level) {
+    return res.status(400).json({ error: 'Недостаточный уровень для этой профессии' });
   }
-  
-  const message = {
-    id: data.messages.length + 1,
-    userId: userId,
-    username: user.username,
-    text: text,
-    chatId: chatId || 'global',
-    timestamp: Date.now()
-  };
-  
-  data.messages.push(message);
-  
-  // Рассылаем через WebSocket
-  wss.clients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify({
-        type: 'new_message',
-        message: message
-      }));
-    }
+
+  if (user.selectedProfessions.length >= 3) {
+    return res.status(400).json({ error: 'Можно выбрать не более 3 профессий' });
+  }
+
+  if (user.selectedProfessions.find(p => p.id === professionId)) {
+    return res.status(400).json({ error: 'Эта профессия уже выбрана' });
+  }
+
+  user.selectedProfessions.push(profession);
+
+  res.json({
+    success: true,
+    message: `Профессия "${profession.name}" выбрана`,
+    professions: user.selectedProfessions
   });
-  
-  res.json({ success: true, message: message });
 });
 
-// Получение сообщений
+// 💬 СООБЩЕНИЯ
 app.get('/api/messages/:chatId', (req, res) => {
   const { chatId } = req.params;
-  const messages = data.messages
-    .filter(msg => msg.chatId === chatId)
-    .slice(-50);
-  res.json(messages);
+  const messages = data.messages[chatId] || [];
+  
+  res.json({
+    success: true,
+    messages: messages.slice(-100), // Последние 100 сообщений
+    total: messages.length
+  });
 });
 
+function handleNewMessage(data) {
+  const { chatId, text, userId, username } = data;
+  
+  const user = data.users.find(u => u.id === userId);
+  if (!user) return;
+
+  const message = {
+    id: generateId(),
+    userId: userId,
+    username: username,
+    text: text,
+    chatId: chatId || 'general',
+    timestamp: Date.now(),
+    time: new Date().toLocaleTimeString('ru-RU', { 
+      hour: '2-digit', minute: '2-digit' 
+    })
+  };
+
+  // Сохраняем сообщение
+  if (!data.messages[chatId]) {
+    data.messages[chatId] = [];
+  }
+  data.messages[chatId].push(message);
+
+  // Рассылаем через WebSocket
+  broadcastToChat(chatId, {
+    type: 'new_message',
+    message: message
+  });
+
+  console.log('💬 Новое сообщение в', chatId, 'от', username);
+}
+
+app.post('/api/messages', (req, res) => {
+  const { chatId, text, userId, username } = req.body;
+
+  if (!text || !username) {
+    return res.status(400).json({ error: 'Текст и имя пользователя обязательны' });
+  }
+
+  handleNewMessage({ chatId, text, userId, username });
+
+  res.json({
+    success: true,
+    message: 'Сообщение отправлено'
+  });
+});
+
+// 📋 ЗАДАНИЯ
+app.get('/api/tasks', (req, res) => {
+  res.json({
+    success: true,
+    tasks: data.tasks.filter(task => !task.completed)
+  });
+});
+
+app.post('/api/tasks', (req, res) => {
+  const { title, description, reward, requiredLevel, createdBy } = req.body;
+
+  const task = {
+    id: generateId(),
+    title,
+    description,
+    reward: reward || 10,
+    requiredLevel: requiredLevel || 1,
+    createdBy,
+    createdAt: new Date().toISOString(),
+    completed: false,
+    completedBy: null
+  };
+
+  data.tasks.push(task);
+
+  // Уведомление о новом задании
+  broadcastToAll({
+    type: 'new_task',
+    task: task
+  });
+
+  res.json({
+    success: true,
+    task: task
+  });
+});
+
+app.post('/api/tasks/complete', (req, res) => {
+  const { taskId, userId } = req.body;
+
+  const task = data.tasks.find(t => t.id === taskId);
+  const user = data.users.find(u => u.id === userId);
+
+  if (!task || !user) {
+    return res.status(400).json({ error: 'Задание или пользователь не найдены' });
+  }
+
+  if (task.completed) {
+    return res.status(400).json({ error: 'Задание уже выполнено' });
+  }
+
+  task.completed = true;
+  task.completedBy = userId;
+  task.completedAt = new Date().toISOString();
+
+  // Награда пользователю
+  user.coins += task.reward;
+  user.experience += task.reward * 10;
+
+  // Проверка повышения уровня
+  const neededExp = user.level * 100;
+  if (user.experience >= neededExp) {
+    user.level += 1;
+    user.experience = 0;
+    
+    // Уведомление о новом уровне
+    broadcastToAll({
+      type: 'level_up',
+      userId: userId,
+      username: user.username,
+      newLevel: user.level
+    });
+  }
+
+  res.json({
+    success: true,
+    message: 'Задание выполнено!',
+    reward: task.reward,
+    newLevel: user.level,
+    coins: user.coins
+  });
+});
+
+// 🔔 УВЕДОМЛЕНИЯ
+app.get('/api/notifications/:userId', (req, res) => {
+  const { userId } = req.params;
+  const userNotifications = data.notifications
+    .filter(notif => notif.userId === userId)
+    .slice(-50);
+  
+  res.json({
+    success: true,
+    notifications: userNotifications
+  });
+});
+
+app.post('/api/notifications', (req, res) => {
+  const { userId, title, message, type } = req.body;
+
+  const notification = {
+    id: generateId(),
+    userId,
+    title,
+    message,
+    type: type || 'system',
+    timestamp: Date.now(),
+    read: false
+  };
+
+  data.notifications.push(notification);
+
+  // Отправляем уведомление через WebSocket если пользователь онлайн
+  const userConnections = Array.from(data.activeConnections.entries())
+    .filter(([id, ws]) => {
+      // Здесь должна быть логика определения userId по соединению
+      return ws.readyState === WebSocket.OPEN;
+    });
+
+  userConnections.forEach(([id, ws]) => {
+    ws.send(JSON.stringify({
+      type: 'notification',
+      notification: notification
+    }));
+  });
+
+  res.json({
+    success: true,
+    notification: notification
+  });
+});
+
+// 🚨 ЗАПУСК СЕРВЕРА
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Сервер запущен на порту ${PORT}`);
-  console.log(`🔐 Система 2FA включена`);
-  console.log(`👥 Готовых аккаунтов: 0`);
+  console.log('🚀 Anongram Server v3.0 запущен!');
+  console.log(`📍 Порт: ${PORT}`);
+  console.log('🔗 WebSocket: включен');
+  console.log('💬 Чаты: Общий, Архив, Избранное');
+  console.log('🎭 Профессии: 20 профессий с уровнями');
+  console.log('📋 Задания: система наград и опыта');
+  console.log('👥 Пользователи: 0 зарегистрировано');
+  console.log('🌐 Готов к работе!');
 });
