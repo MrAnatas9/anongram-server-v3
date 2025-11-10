@@ -7,7 +7,7 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 app.use(cors());
 app.use(express.json());
@@ -76,22 +76,22 @@ wss.on('connection', (ws, req) => {
 
   ws.on('message', (message) => {
     try {
-      const data = JSON.parse(message);
-      console.log('📨 WebSocket сообщение:', data);
+      const parsedData = JSON.parse(message);
+      console.log('📨 WebSocket сообщение:', parsedData);
       
       // Обрабатываем разные типы сообщений
-      switch (data.type) {
+      switch (parsedData.type) {
         case 'send_message':
-          handleNewMessage(data);
+          handleNewMessage(parsedData);
           break;
         case 'typing_start':
-          broadcastTyping(data.chatId, data.username, true);
+          broadcastTyping(parsedData.chatId, parsedData.username, true);
           break;
         case 'typing_stop':
-          broadcastTyping(data.chatId, data.username, false);
+          broadcastTyping(parsedData.chatId, parsedData.username, false);
           break;
         case 'user_online':
-          broadcastUserStatus(data.userId, true);
+          broadcastUserStatus(parsedData.userId, true);
           break;
       }
     } catch (error) {
@@ -358,23 +358,15 @@ app.post('/api/professions/select', (req, res) => {
   });
 });
 
-// 💬 СООБЩЕНИЯ
-app.get('/api/messages/:chatId', (req, res) => {
-  const { chatId } = req.params;
-  const messages = data.messages[chatId] || [];
-  
-  res.json({
-    success: true,
-    messages: messages.slice(-100), // Последние 100 сообщений
-    total: messages.length
-  });
-});
-
-function handleNewMessage(data) {
-  const { chatId, text, userId, username } = data;
+// 💬 СООБЩЕНИЯ - ИСПРАВЛЕННАЯ ВЕРСИЯ
+function handleNewMessage(messageData) {
+  const { chatId, text, userId, username } = messageData;
   
   const user = data.users.find(u => u.id === userId);
-  if (!user) return;
+  if (!user) {
+    console.log('❌ Пользователь не найден:', userId);
+    return;
+  }
 
   const message = {
     id: generateId(),
@@ -402,6 +394,17 @@ function handleNewMessage(data) {
 
   console.log('💬 Новое сообщение в', chatId, 'от', username);
 }
+
+app.get('/api/messages/:chatId', (req, res) => {
+  const { chatId } = req.params;
+  const messages = data.messages[chatId] || [];
+  
+  res.json({
+    success: true,
+    messages: messages.slice(-100), // Последние 100 сообщений
+    total: messages.length
+  });
+});
 
 app.post('/api/messages', (req, res) => {
   const { chatId, text, userId, username } = req.body;
@@ -530,17 +533,9 @@ app.post('/api/notifications', (req, res) => {
   data.notifications.push(notification);
 
   // Отправляем уведомление через WebSocket если пользователь онлайн
-  const userConnections = Array.from(data.activeConnections.entries())
-    .filter(([id, ws]) => {
-      // Здесь должна быть логика определения userId по соединению
-      return ws.readyState === WebSocket.OPEN;
-    });
-
-  userConnections.forEach(([id, ws]) => {
-    ws.send(JSON.stringify({
-      type: 'notification',
-      notification: notification
-    }));
+  broadcastToAll({
+    type: 'notification',
+    notification: notification
   });
 
   res.json({
