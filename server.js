@@ -9,7 +9,7 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 80;
 const DATA_FILE = path.join(__dirname, 'data.json');
 
 app.use(cors());

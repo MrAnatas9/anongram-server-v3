@@ -1,0 +1,16 @@
+name: anongram-server
+type: custom
+
+build:
+  tool: dockerfile
+
+deploy:
+  command: npm start
+
+resources:
+  memory: 256
+  disk: 1024
+
+expose:
+  - port: 10000
+    protocol: http
