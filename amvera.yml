@@ -12,5 +12,9 @@ resources:
   disk: 1024
 
 expose:
-  - port: 10000
+  - port: 80
     protocol: http
+
+healthcheck:
+  path: /
+  port: 80
