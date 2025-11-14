@@ -19,11 +19,21 @@ const supabase = createClient(
 app.use(cors());
 app.use(express.json());
 
-// 🗄️ Функции для работы с Supabase
+// 🗄️ Функции для работы с Supabase (используем snake_case)
 async function addMessage(message) {
+  const messageData = {
+    id: message.id,
+    userid: message.userId,
+    username: message.username,
+    text: message.text,
+    chatid: message.chatId,
+    timestamp: message.timestamp,
+    time: message.time
+  };
+
   const { data, error } = await supabase
     .from('messages')
-    .insert([message]);
+    .insert([messageData]);
   
   if (error) {
     console.error('❌ Ошибка сохранения сообщения:', error);
@@ -37,7 +47,7 @@ async function getMessages(chatId) {
   const { data, error } = await supabase
     .from('messages')
     .select('*')
-    .eq('chatId', chatId)
+    .eq('chatid', chatId)
     .order('timestamp', { ascending: true });
   
   if (error) {
@@ -48,9 +58,21 @@ async function getMessages(chatId) {
 }
 
 async function addUser(user) {
+  const userData = {
+    id: user.id,
+    username: user.username,
+    accesscode: user.accessCode,
+    level: user.level,
+    coins: user.coins,
+    experience: user.experience,
+    isonline: user.isOnline,
+    lastseen: user.lastSeen,
+    createdat: user.createdAt
+  };
+
   const { data, error } = await supabase
     .from('users')
-    .insert([user]);
+    .insert([userData]);
   
   if (error) {
     console.error('❌ Ошибка сохранения пользователя:', error);
@@ -81,6 +103,19 @@ async function getProfessions() {
   if (error) {
     console.error('❌ Ошибка загрузки профессий:', error);
     return [];
+  }
+  return data || [];
+}
+
+async function getUsers() {
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, username, level, coins, experience, isonline, lastseen')
+    .order('level', { ascending: false });
+  
+  if (error) {
+    console.error('❌ Ошибка загрузки пользователей:', error);
+    return null;
   }
   return data || [];
 }
@@ -226,19 +261,16 @@ app.post('/api/auth/register', async (req, res) => {
 
 // 👥 ПОЛЬЗОВАТЕЛИ
 app.get('/api/users', async (req, res) => {
-  const { data: users, error } = await supabase
-    .from('users')
-    .select('id, username, level, coins, experience, isOnline, lastSeen')
-    .order('level', { ascending: false });
+  const users = await getUsers();
 
-  if (error) {
+  if (users === null) {
     return res.status(500).json({ error: 'Ошибка загрузки пользователей' });
   }
 
   res.json({
     success: true,
-    users: users || [],
-    total: users?.length || 0
+    users: users,
+    total: users.length
   });
 });
 
@@ -284,51 +316,6 @@ app.get('/api/professions', async (req, res) => {
       error: 'Ошибка загрузки профессий' 
     });
   }
-});
-
-// 📋 ЗАДАНИЯ
-app.get('/api/tasks', async (req, res) => {
-  const { data: tasks, error } = await supabase
-    .from('tasks')
-    .select('*')
-    .eq('completed', false)
-    .order('createdAt', { ascending: true });
-
-  if (error) {
-    return res.status(500).json({ error: 'Ошибка загрузки заданий' });
-  }
-
-  res.json({
-    success: true,
-    tasks: tasks || []
-  });
-});
-
-app.post('/api/tasks', async (req, res) => {
-  const { title, description, reward, createdBy } = req.body;
-
-  const task = {
-    id: generateId(),
-    title,
-    description,
-    reward: reward || 10,
-    createdBy,
-    createdAt: new Date().toISOString(),
-    completed: false
-  };
-
-  const { data, error } = await supabase
-    .from('tasks')
-    .insert([task]);
-
-  if (error) {
-    return res.status(500).json({ error: 'Ошибка создания задания' });
-  }
-
-  res.json({
-    success: true,
-    task: data[0]
-  });
 });
 
 // 🚨 ЗАПУСК СЕРВЕРА
