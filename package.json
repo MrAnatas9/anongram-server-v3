@@ -1,16 +1,16 @@
 {
   "name": "anongram-server",
-  "version": "3.2.0",
-  "description": "Anongram Messenger Backend",
+  "version": "4.0.0",
+  "description": "Anongram Messenger Backend with Supabase",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.21.2",
-    "ws": "^8.18.3"
+    "ws": "^8.18.3",
+    "@supabase/supabase-js": "^2.49.1"
   },
   "engines": {
     "node": ">=18.0.0"
