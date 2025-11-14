@@ -40,7 +40,7 @@ async function addMessage(message) {
     return null;
   }
   console.log('💾 Сообщение сохранено в Supabase');
-  return data[0];
+  return data ? data[0] : message;
 }
 
 async function getMessages(chatId) {
@@ -79,7 +79,7 @@ async function addUser(user) {
     return null;
   }
   console.log('👥 Пользователь сохранен в Supabase');
-  return data[0];
+  return data ? data[0] : message;
 }
 
 async function getUserByUsername(username) {
