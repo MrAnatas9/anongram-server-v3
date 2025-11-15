@@ -19,7 +19,7 @@ const supabase = createClient(
 app.use(cors());
 app.use(express.json());
 
-// 🗄️ Функции для работы с Supabase (используем snake_case)
+// 🗄️ Функции для работы с Supabase
 async function addMessage(message) {
   const messageData = {
     id: message.id,
@@ -34,12 +34,11 @@ async function addMessage(message) {
   const { data, error } = await supabase
     .from('messages')
     .insert([messageData]);
-  
+
   if (error) {
     console.error('❌ Ошибка сохранения сообщения:', error);
     return null;
   }
-  console.log('💾 Сообщение сохранено в Supabase');
   return data ? data[0] : message;
 }
 
@@ -49,7 +48,7 @@ async function getMessages(chatId) {
     .select('*')
     .eq('chatid', chatId)
     .order('timestamp', { ascending: true });
-  
+
   if (error) {
     console.error('❌ Ошибка загрузки сообщений:', error);
     return [];
@@ -67,19 +66,33 @@ async function addUser(user) {
     experience: user.experience,
     isonline: user.isOnline,
     lastseen: user.lastSeen,
-    createdat: user.createdAt
+    createdat: user.createdAt,
+    isadmin: user.isAdmin
   };
 
   const { data, error } = await supabase
     .from('users')
     .insert([userData]);
-  
+
   if (error) {
     console.error('❌ Ошибка сохранения пользователя:', error);
     return null;
   }
-  console.log('👥 Пользователь сохранен в Supabase');
-  return data ? data[0] : message;
+  return data ? data[0] : user;
+}
+
+async function getUserByAccessCode(accessCode) {
+  const { data, error } = await supabase
+    .from('users')
+    .select('*')
+    .eq('accesscode', accessCode)
+    .single();
+
+  if (error) {
+    console.log('🔍 Пользователь с кодом', accessCode, 'не найден');
+    return null;
+  }
+  return data;
 }
 
 async function getUserByUsername(username) {
@@ -88,34 +101,30 @@ async function getUserByUsername(username) {
     .select('*')
     .eq('username', username)
     .single();
-  
+
   if (error) return null;
   return data;
 }
 
-async function getProfessions() {
-  const { data, error } = await supabase
-    .from('professions')
-    .select('*')
-    .order('level', { ascending: true })
-    .order('id', { ascending: true });
-  
-  if (error) {
-    console.error('❌ Ошибка загрузки профессий:', error);
-    return [];
-  }
-  return data || [];
+async function updateUserLastSeen(userId) {
+  await supabase
+    .from('users')
+    .update({ 
+      isonline: true,
+      lastseen: new Date().toISOString()
+    })
+    .eq('id', userId);
 }
 
 async function getUsers() {
   const { data, error } = await supabase
     .from('users')
-    .select('id, username, level, coins, experience, isonline, lastseen')
+    .select('id, username, level, coins, experience, isonline, lastseen, isadmin')
     .order('level', { ascending: false });
-  
+
   if (error) {
     console.error('❌ Ошибка загрузки пользователей:', error);
-    return null;
+    return [];
   }
   return data || [];
 }
@@ -130,14 +139,11 @@ let activeConnections = new Map();
 
 wss.on('connection', (ws, req) => {
   const connectionId = generateId();
-  console.log('🔗 Новое WebSocket подключение:', connectionId);
-
   activeConnections.set(connectionId, ws);
 
   ws.on('message', async (message) => {
     try {
       const parsedData = JSON.parse(message);
-
       switch (parsedData.type) {
         case 'send_message':
           await handleNewMessage(parsedData);
@@ -149,7 +155,6 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
-    console.log('❌ WebSocket отключен:', connectionId);
     activeConnections.delete(connectionId);
   });
 
@@ -187,17 +192,12 @@ async function handleNewMessage(messageData) {
     })
   };
 
-  // Сохраняем в Supabase
   const savedMessage = await addMessage(message);
-  
   if (savedMessage) {
-    // Рассылаем через WebSocket
     broadcastToChat(chatId, {
       type: 'new_message',
       message: savedMessage
     });
-
-    console.log('💬 Новое сообщение в', chatId, 'от', username);
   }
 }
 
@@ -205,45 +205,114 @@ async function handleNewMessage(messageData) {
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: '🚀 Anongram Server v4.0 (Supabase)',
-    version: '4.0.0',
-    timestamp: new Date().toISOString(),
-    database: 'Supabase PostgreSQL'
+    message: '🚀 Anongram Server v6.0 (Fixed Auth)',
+    version: '6.0.0',
+    timestamp: new Date().toISOString()
   });
 });
 
-// 👤 РЕГИСТРАЦИЯ
+// 🔐 ПРОВЕРКА КОДА (упрощенная логика)
+app.post('/api/auth/check-code', async (req, res) => {
+  const { code } = req.body;
+
+  console.log('🔍 Проверка кода:', code);
+
+  if (!code) {
+    return res.status(400).json({ 
+      success: false,
+      error: 'Введите код доступа' 
+    });
+  }
+
+  try {
+    // Ищем пользователя по коду
+    const existingUser = await getUserByAccessCode(code);
+    
+    if (existingUser) {
+      console.log('✅ Найден существующий пользователь:', existingUser.username);
+      
+      // Обновляем время последнего входа
+      await updateUserLastSeen(existingUser.id);
+
+      res.json({
+        success: true,
+        user: {
+          id: existingUser.id,
+          username: existingUser.username,
+          level: existingUser.level,
+          coins: existingUser.coins,
+          experience: existingUser.experience,
+          isAdmin: existingUser.isadmin
+        },
+        userExists: true
+      });
+    } else {
+      console.log('📝 Код свободен, можно регистрироваться');
+      res.json({
+        success: true,
+        userExists: false,
+        message: 'Код свободен. Зарегистрируйтесь.'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Ошибка проверки кода:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Ошибка сервера' 
+    });
+  }
+});
+
+// 👤 РЕГИСТРАЦИЯ НОВОГО ПОЛЬЗОВАТЕЛЯ
 app.post('/api/auth/register', async (req, res) => {
   const { username, code } = req.body;
 
-  console.log('📝 Регистрация:', username);
+  console.log('📝 Регистрация:', username, 'код:', code);
 
   if (!username || !code) {
-    return res.status(400).json({ error: 'Заполните никнейм и код доступа' });
+    return res.status(400).json({ 
+      success: false,
+      error: 'Заполните никнейм и код доступа' 
+    });
   }
 
   // Проверяем занят ли никнейм
-  const existingUser = await getUserByUsername(username);
-  if (existingUser) {
-    return res.status(400).json({ error: 'Этот никнейм уже занят' });
+  const existingUsername = await getUserByUsername(username);
+  if (existingUsername) {
+    return res.status(400).json({ 
+      success: false,
+      error: 'Этот никнейм уже занят' 
+    });
   }
 
+  // Проверяем занят ли код
+  const existingCode = await getUserByAccessCode(code);
+  if (existingCode) {
+    return res.status(400).json({ 
+      success: false,
+      error: 'Этот код доступа уже используется' 
+    });
+  }
+
+  // Создаем нового пользователя
+  const isAdmin = code === '654321';
   const newUser = {
     id: generateId(),
     username: username,
     accessCode: code,
-    level: 1,
-    coins: 100,
+    level: isAdmin ? 10 : 1,
+    coins: isAdmin ? 999999 : 100,
     experience: 0,
     isOnline: true,
     lastSeen: new Date().toISOString(),
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    isAdmin: isAdmin
   };
 
   const savedUser = await addUser(newUser);
 
   if (savedUser) {
-    console.log('✅ Новый пользователь:', username);
+    console.log('✅ Новый пользователь:', username, 'админ:', isAdmin);
     res.json({
       success: true,
       user: {
@@ -251,83 +320,130 @@ app.post('/api/auth/register', async (req, res) => {
         username: savedUser.username,
         level: savedUser.level,
         coins: savedUser.coins,
-        experience: savedUser.experience
+        experience: savedUser.experience,
+        isAdmin: savedUser.isadmin
       }
     });
   } else {
-    res.status(500).json({ error: 'Ошибка создания пользователя' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Ошибка создания пользователя' 
+    });
+  }
+});
+
+// 👤 ПРЯМОЙ ВХОД (для существующих пользователей)
+app.post('/api/auth/login', async (req, res) => {
+  const { code } = req.body;
+
+  console.log('🔐 Прямой вход по коду:', code);
+
+  if (!code) {
+    return res.status(400).json({ 
+      success: false,
+      error: 'Введите код доступа' 
+    });
+  }
+
+  try {
+    const existingUser = await getUserByAccessCode(code);
+    
+    if (existingUser) {
+      console.log('✅ Прямой вход:', existingUser.username);
+      await updateUserLastSeen(existingUser.id);
+
+      res.json({
+        success: true,
+        user: {
+          id: existingUser.id,
+          username: existingUser.username,
+          level: existingUser.level,
+          coins: existingUser.coins,
+          experience: existingUser.experience,
+          isAdmin: existingUser.isadmin
+        }
+      });
+    } else {
+      res.status(400).json({ 
+        success: false,
+        error: 'Пользователь с таким кодом не найден' 
+      });
+    }
+  } catch (error) {
+    console.error('❌ Ошибка входа:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Ошибка сервера' 
+    });
   }
 });
 
 // 👥 ПОЛЬЗОВАТЕЛИ
 app.get('/api/users', async (req, res) => {
-  const users = await getUsers();
-
-  if (users === null) {
-    return res.status(500).json({ error: 'Ошибка загрузки пользователей' });
+  try {
+    const users = await getUsers();
+    res.json({
+      success: true,
+      users: users,
+      total: users.length
+    });
+  } catch (error) {
+    console.error('❌ Ошибка загрузки пользователей:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Ошибка загрузки пользователей' 
+    });
   }
-
-  res.json({
-    success: true,
-    users: users,
-    total: users.length
-  });
 });
 
 // 💬 СООБЩЕНИЯ
 app.get('/api/messages/:chatId', async (req, res) => {
   const { chatId } = req.params;
-  const messages = await getMessages(chatId);
-
-  res.json({
-    success: true,
-    messages: messages.slice(-100),
-    total: messages.length
-  });
+  try {
+    const messages = await getMessages(chatId);
+    res.json({
+      success: true,
+      messages: messages.slice(-100),
+      total: messages.length
+    });
+  } catch (error) {
+    console.error('❌ Ошибка загрузки сообщений:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Ошибка загрузки сообщений' 
+    });
+  }
 });
 
 app.post('/api/messages', async (req, res) => {
   const { chatId, text, userId, username } = req.body;
 
   if (!text || !username) {
-    return res.status(400).json({ error: 'Текст и имя пользователя обязательны' });
+    return res.status(400).json({ 
+      success: false,
+      error: 'Текст и имя пользователя обязательны' 
+    });
   }
 
-  await handleNewMessage({ chatId, text, userId, username });
-
-  res.json({
-    success: true,
-    message: 'Сообщение отправлено'
-  });
-});
-
-// 🎭 ПРОФЕССИИ
-app.get('/api/professions', async (req, res) => {
   try {
-    const professions = await getProfessions();
+    await handleNewMessage({ chatId, text, userId, username });
     res.json({
       success: true,
-      professions: professions
+      message: 'Сообщение отправлено'
     });
   } catch (error) {
-    console.error('❌ Ошибка получения профессий:', error);
+    console.error('❌ Ошибка отправки сообщения:', error);
     res.status(500).json({ 
-      success: false, 
-      error: 'Ошибка загрузки профессий' 
+      success: false,
+      error: 'Ошибка отправки сообщения' 
     });
   }
 });
 
 // 🚨 ЗАПУСК СЕРВЕРА
 server.listen(PORT, '0.0.0.0', async () => {
-  console.log('🚀 Anongram Server v4.0 запущен!');
+  console.log('🚀 Anongram Server v6.0 запущен!');
   console.log(`📍 Порт: ${PORT}`);
-  console.log('🔗 WebSocket: включен');
-  console.log('🗄️ База: Supabase PostgreSQL');
-  
-  // Проверяем подключение к базе
-  const professions = await getProfessions();
-  console.log(`🎭 Профессий загружено: ${professions.length}`);
-  
+  console.log('🔐 Упрощенная система аутентификации');
   console.log('🌐 Готов к работе!');
 });
