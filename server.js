@@ -22,7 +22,7 @@ app.use(express.json());
 // 🗄️ Функции для работы с Supabase
 async function addMessage(message) {
   const messageData = {
-    id: message.id,
+    id: message.id, // Используем ID от клиента
     userid: message.userId,
     username: message.username,
     text: message.text,
@@ -129,11 +129,6 @@ async function getUsers() {
   return data || [];
 }
 
-// 🔧 УТИЛИТЫ
-function generateId() {
-  return Date.now().toString() + Math.random().toString(36).substr(2, 9);
-}
-
 // 🔗 WEBSOCKET
 let activeConnections = new Map();
 
@@ -178,10 +173,10 @@ function broadcastToChat(chatId, message) {
 
 // 💬 ФУНКЦИЯ СООБЩЕНИЙ
 async function handleNewMessage(messageData) {
-  const { chatId, text, userId, username } = messageData;
+  const { chatId, text, userId, username, messageId } = messageData;
 
   const message = {
-    id: generateId(),
+    id: messageId || generateId(), // Используем ID от клиента или генерируем новый
     userId: userId,
     username: username,
     text: text,
@@ -201,12 +196,17 @@ async function handleNewMessage(messageData) {
   }
 }
 
+// 🔧 УТИЛИТЫ
+function generateId() {
+  return Date.now().toString() + Math.random().toString(36).substr(2, 9);
+}
+
 // 🚀 API ROUTES
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: '🚀 Anongram Server v6.0 (Fixed Auth)',
-    version: '6.0.0',
+    message: '🚀 Anongram Server v6.1 (Fixed Message IDs)',
+    version: '6.1.0',
     timestamp: new Date().toISOString()
   });
 });
@@ -442,8 +442,8 @@ app.post('/api/messages', async (req, res) => {
 
 // 🚨 ЗАПУСК СЕРВЕРА
 server.listen(PORT, '0.0.0.0', async () => {
-  console.log('🚀 Anongram Server v6.0 запущен!');
+  console.log('🚀 Anongram Server v6.1 запущен!');
   console.log(`📍 Порт: ${PORT}`);
-  console.log('🔐 Упрощенная система аутентификации');
+  console.log('🔐 Исправлены ID сообщений');
   console.log('🌐 Готов к работе!');
 });
