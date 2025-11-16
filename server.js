@@ -22,7 +22,7 @@ app.use(express.json());
 // 🗄️ Функции для работы с Supabase
 async function addMessage(message) {
   const messageData = {
-    id: message.id, // Используем ID от клиента
+    id: message.id,
     userid: message.userId,
     username: message.username,
     text: message.text,
@@ -30,6 +30,13 @@ async function addMessage(message) {
     timestamp: message.timestamp,
     time: message.time
   };
+
+  console.log('💾 Сохраняем сообщение:', {
+    id: message.id,
+    userid: message.userId,
+    username: message.username,
+    text: message.text
+  });
 
   const { data, error } = await supabase
     .from('messages')
@@ -92,6 +99,17 @@ async function getUserByAccessCode(accessCode) {
     console.log('🔍 Пользователь с кодом', accessCode, 'не найден');
     return null;
   }
+  return data;
+}
+
+async function getUserById(userId) {
+  const { data, error } = await supabase
+    .from('users')
+    .select('username')
+    .eq('id', userId)
+    .single();
+
+  if (error) return null;
   return data;
 }
 
@@ -175,10 +193,20 @@ function broadcastToChat(chatId, message) {
 async function handleNewMessage(messageData) {
   const { chatId, text, userId, username, messageId } = messageData;
 
+  // Получаем реальное имя пользователя из базы
+  let realUsername = username;
+  if (userId) {
+    const user = await getUserById(userId);
+    if (user && user.username) {
+      realUsername = user.username;
+      console.log('👤 Найдено реальное имя пользователя:', realUsername);
+    }
+  }
+
   const message = {
-    id: messageId || generateId(), // Используем ID от клиента или генерируем новый
+    id: messageId || generateId(),
     userId: userId,
-    username: username,
+    username: realUsername, // Используем реальное имя из базы
     text: text,
     chatId: chatId || 'general',
     timestamp: new Date().toISOString(),
@@ -186,6 +214,13 @@ async function handleNewMessage(messageData) {
       hour: '2-digit', minute: '2-digit'
     })
   };
+
+  console.log('💬 Новое сообщение:', {
+    id: message.id,
+    userId: message.userId,
+    username: message.username,
+    text: message.text
+  });
 
   const savedMessage = await addMessage(message);
   if (savedMessage) {
@@ -205,13 +240,13 @@ function generateId() {
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: '🚀 Anongram Server v6.1 (Fixed Message IDs)',
-    version: '6.1.0',
+    message: '🚀 Anongram Server v6.2 (Fixed Usernames)',
+    version: '6.2.0',
     timestamp: new Date().toISOString()
   });
 });
 
-// 🔐 ПРОВЕРКА КОДА (упрощенная логика)
+// 🔐 ПРОВЕРКА КОДА
 app.post('/api/auth/check-code', async (req, res) => {
   const { code } = req.body;
 
@@ -225,13 +260,11 @@ app.post('/api/auth/check-code', async (req, res) => {
   }
 
   try {
-    // Ищем пользователя по коду
     const existingUser = await getUserByAccessCode(code);
     
     if (existingUser) {
       console.log('✅ Найден существующий пользователь:', existingUser.username);
       
-      // Обновляем время последнего входа
       await updateUserLastSeen(existingUser.id);
 
       res.json({
@@ -276,7 +309,6 @@ app.post('/api/auth/register', async (req, res) => {
     });
   }
 
-  // Проверяем занят ли никнейм
   const existingUsername = await getUserByUsername(username);
   if (existingUsername) {
     return res.status(400).json({ 
@@ -285,7 +317,6 @@ app.post('/api/auth/register', async (req, res) => {
     });
   }
 
-  // Проверяем занят ли код
   const existingCode = await getUserByAccessCode(code);
   if (existingCode) {
     return res.status(400).json({ 
@@ -294,7 +325,6 @@ app.post('/api/auth/register', async (req, res) => {
     });
   }
 
-  // Создаем нового пользователя
   const isAdmin = code === '654321';
   const newUser = {
     id: generateId(),
@@ -332,7 +362,7 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// 👤 ПРЯМОЙ ВХОД (для существующих пользователей)
+// 👤 ПРЯМОЙ ВХОД
 app.post('/api/auth/login', async (req, res) => {
   const { code } = req.body;
 
@@ -442,8 +472,8 @@ app.post('/api/messages', async (req, res) => {
 
 // 🚨 ЗАПУСК СЕРВЕРА
 server.listen(PORT, '0.0.0.0', async () => {
-  console.log('🚀 Anongram Server v6.1 запущен!');
+  console.log('🚀 Anongram Server v6.2 запущен!');
   console.log(`📍 Порт: ${PORT}`);
-  console.log('🔐 Исправлены ID сообщений');
+  console.log('🔐 Исправлены имена пользователей');
   console.log('🌐 Готов к работе!');
 });
