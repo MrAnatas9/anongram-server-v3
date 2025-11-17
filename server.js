@@ -127,7 +127,7 @@ async function getUserByUsername(username) {
 async function updateUserLastSeen(userId) {
   await supabase
     .from('users')
-    .update({ 
+    .update({
       isonline: true,
       lastseen: new Date().toISOString()
     })
@@ -157,6 +157,8 @@ wss.on('connection', (ws, req) => {
   ws.on('message', async (message) => {
     try {
       const parsedData = JSON.parse(message);
+      console.log('📨 WebSocket сообщение:', parsedData);
+      
       switch (parsedData.type) {
         case 'send_message':
           await handleNewMessage(parsedData);
@@ -179,24 +181,51 @@ wss.on('connection', (ws, req) => {
 
 // 📢 ФУНКЦИИ РАССЫЛКИ
 function broadcastToChat(chatId, message) {
+  console.log(`📢 Рассылка в чат ${chatId}, соединений: ${activeConnections.size}`);
+  
+  let sentCount = 0;
   activeConnections.forEach((ws, id) => {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
         ...message,
         chatId: chatId
       }));
+      sentCount++;
     }
   });
+  
+  console.log(`✅ Отправлено ${sentCount} клиентам`);
 }
 
 // 💬 ФУНКЦИЯ СООБЩЕНИЙ
 async function handleNewMessage(messageData) {
-  const { chatId, text, userId, username, messageId } = messageData;
+  console.log('🔍 Обработка WebSocket сообщения:', messageData);
+  
+  // ИСПРАВЛЕНИЕ: обрабатываем оба варианта полей (camelCase и lowercase)
+  const { 
+    chatId, chatid, 
+    text, 
+    userId, userid, 
+    username, 
+    messageId, id 
+  } = messageData;
+
+  // Используем правильные поля (приоритет lowercase)
+  const finalChatId = chatid || chatId || 'general';
+  const finalUserId = userid || userId;
+  const finalMessageId = id || messageId;
+  
+  console.log(`🔍 Извлеченные поля: chatId=${finalChatId}, userId=${finalUserId}, text=${text}`);
+
+  if (!text || !finalUserId) {
+    console.error('❌ Недостаточно данных для сообщения');
+    return;
+  }
 
   // Получаем реальное имя пользователя из базы
   let realUsername = username;
-  if (userId) {
-    const user = await getUserById(userId);
+  if (finalUserId) {
+    const user = await getUserById(finalUserId);
     if (user && user.username) {
       realUsername = user.username;
       console.log('👤 Найдено реальное имя пользователя:', realUsername);
@@ -204,18 +233,18 @@ async function handleNewMessage(messageData) {
   }
 
   const message = {
-    id: messageId || generateId(),
-    userId: userId,
-    username: realUsername, // Используем реальное имя из базы
+    id: finalMessageId || generateId(),
+    userId: finalUserId,
+    username: realUsername,
     text: text,
-    chatId: chatId || 'general',
+    chatId: finalChatId,
     timestamp: new Date().toISOString(),
     time: new Date().toLocaleTimeString('ru-RU', {
       hour: '2-digit', minute: '2-digit'
     })
   };
 
-  console.log('💬 Новое сообщение:', {
+  console.log('💬 Создано сообщение:', {
     id: message.id,
     userId: message.userId,
     username: message.username,
@@ -223,11 +252,15 @@ async function handleNewMessage(messageData) {
   });
 
   const savedMessage = await addMessage(message);
+  
   if (savedMessage) {
-    broadcastToChat(chatId, {
+    console.log('✅ Сообщение сохранено в базу');
+    broadcastToChat(finalChatId, {
       type: 'new_message',
       message: savedMessage
     });
+  } else {
+    console.error('❌ Не удалось сохранить сообщение в базу');
   }
 }
 
@@ -240,8 +273,8 @@ function generateId() {
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: '🚀 Anongram Server v6.2 (Fixed Usernames)',
-    version: '6.2.0',
+    message: '🚀 Anongram Server v6.3 (Fixed WebSocket)',
+    version: '6.3.0',
     timestamp: new Date().toISOString()
   });
 });
@@ -253,18 +286,18 @@ app.post('/api/auth/check-code', async (req, res) => {
   console.log('🔍 Проверка кода:', code);
 
   if (!code) {
-    return res.status(400).json({ 
+    return res.status(400).json({
       success: false,
-      error: 'Введите код доступа' 
+      error: 'Введите код доступа'
     });
   }
 
   try {
     const existingUser = await getUserByAccessCode(code);
-    
+
     if (existingUser) {
       console.log('✅ Найден существующий пользователь:', existingUser.username);
-      
+
       await updateUserLastSeen(existingUser.id);
 
       res.json({
@@ -289,9 +322,9 @@ app.post('/api/auth/check-code', async (req, res) => {
     }
   } catch (error) {
     console.error('❌ Ошибка проверки кода:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: 'Ошибка сервера' 
+      error: 'Ошибка сервера'
     });
   }
 });
@@ -303,25 +336,25 @@ app.post('/api/auth/register', async (req, res) => {
   console.log('📝 Регистрация:', username, 'код:', code);
 
   if (!username || !code) {
-    return res.status(400).json({ 
+    return res.status(400).json({
       success: false,
-      error: 'Заполните никнейм и код доступа' 
+      error: 'Заполните никнейм и код доступа'
     });
   }
 
   const existingUsername = await getUserByUsername(username);
   if (existingUsername) {
-    return res.status(400).json({ 
+    return res.status(400).json({
       success: false,
-      error: 'Этот никнейм уже занят' 
+      error: 'Этот никнейм уже занят'
     });
   }
 
   const existingCode = await getUserByAccessCode(code);
   if (existingCode) {
-    return res.status(400).json({ 
+    return res.status(400).json({
       success: false,
-      error: 'Этот код доступа уже используется' 
+      error: 'Этот код доступа уже используется'
     });
   }
 
@@ -355,9 +388,9 @@ app.post('/api/auth/register', async (req, res) => {
       }
     });
   } else {
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: 'Ошибка создания пользователя' 
+      error: 'Ошибка создания пользователя'
     });
   }
 });
@@ -369,15 +402,15 @@ app.post('/api/auth/login', async (req, res) => {
   console.log('🔐 Прямой вход по коду:', code);
 
   if (!code) {
-    return res.status(400).json({ 
+    return res.status(400).json({
       success: false,
-      error: 'Введите код доступа' 
+      error: 'Введите код доступа'
     });
   }
 
   try {
     const existingUser = await getUserByAccessCode(code);
-    
+
     if (existingUser) {
       console.log('✅ Прямой вход:', existingUser.username);
       await updateUserLastSeen(existingUser.id);
@@ -394,16 +427,16 @@ app.post('/api/auth/login', async (req, res) => {
         }
       });
     } else {
-      res.status(400).json({ 
+      res.status(400).json({
         success: false,
-        error: 'Пользователь с таким кодом не найден' 
+        error: 'Пользователь с таким кодом не найден'
       });
     }
   } catch (error) {
     console.error('❌ Ошибка входа:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: 'Ошибка сервера' 
+      error: 'Ошибка сервера'
     });
   }
 });
@@ -419,9 +452,9 @@ app.get('/api/users', async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Ошибка загрузки пользователей:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: 'Ошибка загрузки пользователей' 
+      error: 'Ошибка загрузки пользователей'
     });
   }
 });
@@ -438,9 +471,9 @@ app.get('/api/messages/:chatId', async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Ошибка загрузки сообщений:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: 'Ошибка загрузки сообщений' 
+      error: 'Ошибка загрузки сообщений'
     });
   }
 });
@@ -449,9 +482,9 @@ app.post('/api/messages', async (req, res) => {
   const { chatId, text, userId, username } = req.body;
 
   if (!text || !username) {
-    return res.status(400).json({ 
+    return res.status(400).json({
       success: false,
-      error: 'Текст и имя пользователя обязательны' 
+      error: 'Текст и имя пользователя обязательны'
     });
   }
 
@@ -463,17 +496,17 @@ app.post('/api/messages', async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Ошибка отправки сообщения:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: 'Ошибка отправки сообщения' 
+      error: 'Ошибка отправки сообщения'
     });
   }
 });
 
 // 🚨 ЗАПУСК СЕРВЕРА
 server.listen(PORT, '0.0.0.0', async () => {
-  console.log('🚀 Anongram Server v6.2 запущен!');
+  console.log('🚀 Anongram Server v6.3 запущен!');
   console.log(`📍 Порт: ${PORT}`);
-  console.log('🔐 Исправлены имена пользователей');
+  console.log('🔧 Исправлен WebSocket обработчик');
   console.log('🌐 Готов к работе!');
 });
