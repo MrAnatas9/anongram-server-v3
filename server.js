@@ -63,6 +63,22 @@ async function getMessages(chatId) {
   return data || [];
 }
 
+async function deleteMessage(messageId) {
+  console.log('🗑️ Удаление сообщения из базы:', messageId);
+  
+  const { error } = await supabase
+    .from('messages')
+    .delete()
+    .eq('id', messageId);
+
+  if (error) {
+    console.error('❌ Ошибка удаления сообщения:', error);
+    return false;
+  }
+  
+  return true;
+}
+
 async function addUser(user) {
   const userData = {
     id: user.id,
@@ -197,6 +213,16 @@ function broadcastToChat(chatId, message) {
   console.log(`✅ Отправлено ${sentCount} клиентам`);
 }
 
+function broadcastToAll(message) {
+  console.log(`📢 Рассылка всем: ${activeConnections.size} соединений`);
+  
+  activeConnections.forEach((ws, id) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(message));
+    }
+  });
+}
+
 // 💬 ФУНКЦИЯ СООБЩЕНИЙ
 async function handleNewMessage(messageData) {
   console.log('🔍 Обработка WebSocket сообщения:', messageData);
@@ -273,8 +299,8 @@ function generateId() {
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: '🚀 Anongram Server v6.3 (Fixed WebSocket)',
-    version: '6.3.0',
+    message: '🚀 Anongram Server v6.4 (Added Delete Functionality)',
+    version: '6.4.0',
     timestamp: new Date().toISOString()
   });
 });
@@ -503,10 +529,45 @@ app.post('/api/messages', async (req, res) => {
   }
 });
 
+// 🗑️ API ДЛЯ УДАЛЕНИЯ СООБЩЕНИЙ
+app.delete('/api/messages/:messageId', async (req, res) => {
+  const { messageId } = req.params;
+  
+  try {
+    console.log('🗑️ Удаление сообщения:', messageId);
+    
+    const success = await deleteMessage(messageId);
+
+    if (!success) {
+      return res.status(500).json({
+        success: false,
+        error: 'Ошибка удаления сообщения'
+      });
+    }
+
+    // Рассылаем всем клиентам что сообщение удалено
+    broadcastToAll({
+      type: 'message_deleted',
+      messageId: messageId
+    });
+
+    res.json({
+      success: true,
+      message: 'Сообщение удалено'
+    });
+  } catch (error) {
+    console.error('❌ Ошибка удаления:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера'
+    });
+  }
+});
+
 // 🚨 ЗАПУСК СЕРВЕРА
 server.listen(PORT, '0.0.0.0', async () => {
-  console.log('🚀 Anongram Server v6.3 запущен!');
+  console.log('🚀 Anongram Server v6.4 запущен!');
   console.log(`📍 Порт: ${PORT}`);
-  console.log('🔧 Исправлен WebSocket обработчик');
+  console.log('🗑️ Добавлено удаление сообщений');
   console.log('🌐 Готов к работе!');
 });
