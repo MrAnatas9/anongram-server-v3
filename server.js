@@ -28,14 +28,17 @@ async function addMessage(message) {
     text: message.text,
     chatid: message.chatId,
     timestamp: message.timestamp,
-    time: message.time
+    time: message.time,
+    reply_to: message.replyTo,
+    is_edited: message.isEdited || false
   };
 
   console.log('💾 Сохраняем сообщение:', {
     id: message.id,
     userid: message.userId,
     username: message.username,
-    text: message.text
+    text: message.text,
+    reply_to: message.replyTo
   });
 
   const { data, error } = await supabase
@@ -65,7 +68,7 @@ async function getMessages(chatId) {
 
 async function deleteMessage(messageId) {
   console.log('🗑️ Удаление сообщения из базы:', messageId);
-  
+
   const { error } = await supabase
     .from('messages')
     .delete()
@@ -75,10 +78,105 @@ async function deleteMessage(messageId) {
     console.error('❌ Ошибка удаления сообщения:', error);
     return false;
   }
-  
+
   return true;
 }
 
+async function updateMessage(messageId, newText) {
+  console.log('✏️ Обновление сообщения:', messageId, newText);
+
+  const { error } = await supabase
+    .from('messages')
+    .update({
+      text: newText,
+      is_edited: true,
+      edited_at: new Date().toISOString()
+    })
+    .eq('id', messageId);
+
+  if (error) {
+    console.error('❌ Ошибка обновления сообщения:', error);
+    return false;
+  }
+
+  return true;
+}
+
+// 🎭 ФУНКЦИИ ДЛЯ РЕАКЦИЙ
+async function getMessageReactions(messageId) {
+  const { data, error } = await supabase
+    .from('message_reactions')
+    .select('*')
+    .eq('message_id', messageId);
+
+  if (error) {
+    console.error('❌ Ошибка загрузки реакций:', error);
+    return {};
+  }
+
+  const reactions = {};
+  data.forEach(reaction => {
+    if (!reactions[reaction.reaction]) {
+      reactions[reaction.reaction] = [];
+    }
+    reactions[reaction.reaction].push(reaction.user_id);
+  });
+
+  return reactions;
+}
+
+async function addReaction(messageId, userId, reaction) {
+  console.log('🎭 Добавление реакции:', { messageId, userId, reaction });
+
+  // Сначала удаляем существующую реакцию этого пользователя на это сообщение
+  const { error: deleteError } = await supabase
+    .from('message_reactions')
+    .delete()
+    .eq('message_id', messageId)
+    .eq('user_id', userId)
+    .eq('reaction', reaction);
+
+  if (deleteError && deleteError.code !== 'PGRST116') { // PGRST116 - не найдено для удаления
+    console.error('❌ Ошибка удаления старой реакции:', deleteError);
+  }
+
+  // Добавляем новую реакцию
+  const { error } = await supabase
+    .from('message_reactions')
+    .insert([{
+      message_id: messageId,
+      user_id: userId,
+      reaction: reaction,
+      created_at: new Date().toISOString()
+    }]);
+
+  if (error) {
+    console.error('❌ Ошибка добавления реакции:', error);
+    return false;
+  }
+
+  return true;
+}
+
+async function removeReaction(messageId, userId, reaction) {
+  console.log('🎭 Удаление реакции:', { messageId, userId, reaction });
+
+  const { error } = await supabase
+    .from('message_reactions')
+    .delete()
+    .eq('message_id', messageId)
+    .eq('user_id', userId)
+    .eq('reaction', reaction);
+
+  if (error) {
+    console.error('❌ Ошибка удаления реакции:', error);
+    return false;
+  }
+
+  return true;
+}
+
+// 👤 ФУНКЦИИ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ
 async function addUser(user) {
   const userData = {
     id: user.id,
@@ -121,7 +219,7 @@ async function getUserByAccessCode(accessCode) {
 async function getUserById(userId) {
   const { data, error } = await supabase
     .from('users')
-    .select('username')
+    .select('*')
     .eq('id', userId)
     .single();
 
@@ -173,11 +271,20 @@ wss.on('connection', (ws, req) => {
   ws.on('message', async (message) => {
     try {
       const parsedData = JSON.parse(message);
-      console.log('📨 WebSocket сообщение:', parsedData);
-      
+      console.log('📨 WebSocket сообщение:', parsedData.type);
+
       switch (parsedData.type) {
         case 'send_message':
           await handleNewMessage(parsedData);
+          break;
+        case 'add_reaction':
+          await handleAddReaction(parsedData);
+          break;
+        case 'remove_reaction':
+          await handleRemoveReaction(parsedData);
+          break;
+        case 'edit_message':
+          await handleEditMessage(parsedData);
           break;
       }
     } catch (error) {
@@ -187,18 +294,20 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', () => {
     activeConnections.delete(connectionId);
+    console.log('🔌 WebSocket соединение закрыто, осталось:', activeConnections.size);
   });
 
   ws.send(JSON.stringify({
     type: 'connection_established',
-    message: 'WebSocket подключен'
+    message: 'WebSocket подключен',
+    connectionId: connectionId
   }));
 });
 
 // 📢 ФУНКЦИИ РАССЫЛКИ
 function broadcastToChat(chatId, message) {
   console.log(`📢 Рассылка в чат ${chatId}, соединений: ${activeConnections.size}`);
-  
+
   let sentCount = 0;
   activeConnections.forEach((ws, id) => {
     if (ws.readyState === WebSocket.OPEN) {
@@ -209,39 +318,44 @@ function broadcastToChat(chatId, message) {
       sentCount++;
     }
   });
-  
+
   console.log(`✅ Отправлено ${sentCount} клиентам`);
 }
 
 function broadcastToAll(message) {
   console.log(`📢 Рассылка всем: ${activeConnections.size} соединений`);
-  
+
+  let sentCount = 0;
   activeConnections.forEach((ws, id) => {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(message));
+      sentCount++;
     }
   });
+
+  console.log(`✅ Отправлено ${sentCount} клиентам`);
 }
 
-// 💬 ФУНКЦИЯ СООБЩЕНИЙ
+// 💬 ОБРАБОТКА СООБЩЕНИЙ
 async function handleNewMessage(messageData) {
   console.log('🔍 Обработка WebSocket сообщения:', messageData);
-  
-  // ИСПРАВЛЕНИЕ: обрабатываем оба варианта полей (camelCase и lowercase)
-  const { 
-    chatId, chatid, 
-    text, 
-    userId, userid, 
-    username, 
-    messageId, id 
+
+  const {
+    chatId, chatid,
+    text,
+    userId, userid,
+    username,
+    messageId, id,
+    replyTo, reply_to
   } = messageData;
 
   // Используем правильные поля (приоритет lowercase)
   const finalChatId = chatid || chatId || 'general';
   const finalUserId = userid || userId;
   const finalMessageId = id || messageId;
-  
-  console.log(`🔍 Извлеченные поля: chatId=${finalChatId}, userId=${finalUserId}, text=${text}`);
+  const finalReplyTo = reply_to || replyTo;
+
+  console.log(`🔍 Извлеченные поля: chatId=${finalChatId}, userId=${finalUserId}, replyTo=${finalReplyTo}, text=${text}`);
 
   if (!text || !finalUserId) {
     console.error('❌ Недостаточно данных для сообщения');
@@ -267,26 +381,96 @@ async function handleNewMessage(messageData) {
     timestamp: new Date().toISOString(),
     time: new Date().toLocaleTimeString('ru-RU', {
       hour: '2-digit', minute: '2-digit'
-    })
+    }),
+    replyTo: finalReplyTo,
+    isEdited: false
   };
 
   console.log('💬 Создано сообщение:', {
     id: message.id,
     userId: message.userId,
     username: message.username,
-    text: message.text
+    text: message.text,
+    replyTo: message.replyTo
   });
 
   const savedMessage = await addMessage(message);
-  
+
   if (savedMessage) {
     console.log('✅ Сообщение сохранено в базу');
+    
+    // Загружаем реакции для этого сообщения
+    const reactions = await getMessageReactions(savedMessage.id);
+    savedMessage.reactions = reactions;
+
     broadcastToChat(finalChatId, {
       type: 'new_message',
       message: savedMessage
     });
   } else {
     console.error('❌ Не удалось сохранить сообщение в базу');
+  }
+}
+
+// 🎭 ОБРАБОТКА РЕАКЦИЙ
+async function handleAddReaction(data) {
+  const { messageId, userId, reaction, chatId } = data;
+  
+  console.log('🎭 Обработка добавления реакции:', { messageId, userId, reaction });
+
+  const success = await addReaction(messageId, userId, reaction);
+  
+  if (success) {
+    // Получаем обновленные реакции для сообщения
+    const reactions = await getMessageReactions(messageId);
+    
+    broadcastToChat(chatId, {
+      type: 'reaction_added',
+      messageId: messageId,
+      reactions: reactions,
+      userId: userId,
+      reaction: reaction
+    });
+  }
+}
+
+async function handleRemoveReaction(data) {
+  const { messageId, userId, reaction, chatId } = data;
+  
+  console.log('🎭 Обработка удаления реакции:', { messageId, userId, reaction });
+
+  const success = await removeReaction(messageId, userId, reaction);
+  
+  if (success) {
+    // Получаем обновленные реакции для сообщения
+    const reactions = await getMessageReactions(messageId);
+    
+    broadcastToChat(chatId, {
+      type: 'reaction_removed',
+      messageId: messageId,
+      reactions: reactions,
+      userId: userId,
+      reaction: reaction
+    });
+  }
+}
+
+// ✏️ ОБРАБОТКА РЕДАКТИРОВАНИЯ СООБЩЕНИЙ
+async function handleEditMessage(data) {
+  const { messageId, newText, userId, chatId } = data;
+  
+  console.log('✏️ Обработка редактирования сообщения:', { messageId, newText, userId });
+
+  const success = await updateMessage(messageId, newText);
+  
+  if (success) {
+    broadcastToChat(chatId, {
+      type: 'message_edited',
+      messageId: messageId,
+      newText: newText,
+      editedAt: new Date().toISOString(),
+      editedBy: userId
+    });
   }
 }
 
@@ -299,9 +483,10 @@ function generateId() {
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: '🚀 Anongram Server v6.4 (Added Delete Functionality)',
-    version: '6.4.0',
-    timestamp: new Date().toISOString()
+    message: '🚀 Anongram Server v7.0 (Full Message System)',
+    version: '7.0.0',
+    timestamp: new Date().toISOString(),
+    features: ['delete_messages', 'reactions', 'reply_system', 'edit_messages']
   });
 });
 
@@ -490,9 +675,21 @@ app.get('/api/messages/:chatId', async (req, res) => {
   const { chatId } = req.params;
   try {
     const messages = await getMessages(chatId);
+    
+    // Загружаем реакции для каждого сообщения
+    const messagesWithReactions = await Promise.all(
+      messages.map(async (message) => {
+        const reactions = await getMessageReactions(message.id);
+        return {
+          ...message,
+          reactions: reactions
+        };
+      })
+    );
+    
     res.json({
       success: true,
-      messages: messages.slice(-100),
+      messages: messagesWithReactions.slice(-100),
       total: messages.length
     });
   } catch (error) {
@@ -505,7 +702,7 @@ app.get('/api/messages/:chatId', async (req, res) => {
 });
 
 app.post('/api/messages', async (req, res) => {
-  const { chatId, text, userId, username } = req.body;
+  const { chatId, text, userId, username, replyTo } = req.body;
 
   if (!text || !username) {
     return res.status(400).json({
@@ -515,7 +712,7 @@ app.post('/api/messages', async (req, res) => {
   }
 
   try {
-    await handleNewMessage({ chatId, text, userId, username });
+    await handleNewMessage({ chatId, text, userId, username, replyTo });
     res.json({
       success: true,
       message: 'Сообщение отправлено'
@@ -532,10 +729,33 @@ app.post('/api/messages', async (req, res) => {
 // 🗑️ API ДЛЯ УДАЛЕНИЯ СООБЩЕНИЙ
 app.delete('/api/messages/:messageId', async (req, res) => {
   const { messageId } = req.params;
-  
+
   try {
-    console.log('🗑️ Удаление сообщения:', messageId);
-    
+    console.log('🗑️ Запрос на удаление сообщения:', messageId);
+
+    if (!messageId) {
+      return res.status(400).json({
+        success: false,
+        error: 'ID сообщения обязателен'
+      });
+    }
+
+    // Проверяем существование сообщения
+    const { data: existingMessage, error: checkError } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('id', messageId)
+      .single();
+
+    if (checkError || !existingMessage) {
+      console.log('❌ Сообщение не найдено:', messageId);
+      return res.status(404).json({
+        success: false,
+        error: 'Сообщение не найдено'
+      });
+    }
+
+    // Удаляем сообщение из базы данных
     const success = await deleteMessage(messageId);
 
     if (!success) {
@@ -545,16 +765,20 @@ app.delete('/api/messages/:messageId', async (req, res) => {
       });
     }
 
+    console.log('✅ Сообщение удалено из базы:', messageId);
+
     // Рассылаем всем клиентам что сообщение удалено
     broadcastToAll({
       type: 'message_deleted',
-      messageId: messageId
+      messageId: messageId,
+      chatId: existingMessage.chatid
     });
 
     res.json({
       success: true,
       message: 'Сообщение удалено'
     });
+
   } catch (error) {
     console.error('❌ Ошибка удаления:', error);
     res.status(500).json({
@@ -564,10 +788,131 @@ app.delete('/api/messages/:messageId', async (req, res) => {
   }
 });
 
+// 🎭 API ДЛЯ РЕАКЦИЙ
+app.post('/api/messages/:messageId/reactions', async (req, res) => {
+  const { messageId } = req.params;
+  const { userId, reaction, chatId } = req.body;
+
+  try {
+    console.log('🎭 Добавление реакции через API:', { messageId, userId, reaction });
+
+    const success = await addReaction(messageId, userId, reaction);
+
+    if (success) {
+      const reactions = await getMessageReactions(messageId);
+      
+      broadcastToChat(chatId, {
+        type: 'reaction_added',
+        messageId: messageId,
+        reactions: reactions,
+        userId: userId,
+        reaction: reaction
+      });
+
+      res.json({
+        success: true,
+        reactions: reactions
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: 'Ошибка добавления реакции'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Ошибка добавления реакции:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера'
+    });
+  }
+});
+
+app.delete('/api/messages/:messageId/reactions', async (req, res) => {
+  const { messageId } = req.params;
+  const { userId, reaction, chatId } = req.body;
+
+  try {
+    console.log('🎭 Удаление реакции через API:', { messageId, userId, reaction });
+
+    const success = await removeReaction(messageId, userId, reaction);
+
+    if (success) {
+      const reactions = await getMessageReactions(messageId);
+      
+      broadcastToChat(chatId, {
+        type: 'reaction_removed',
+        messageId: messageId,
+        reactions: reactions,
+        userId: userId,
+        reaction: reaction
+      });
+
+      res.json({
+        success: true,
+        reactions: reactions
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: 'Ошибка удаления реакции'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Ошибка удаления реакции:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера'
+    });
+  }
+});
+
+// ✏️ API ДЛЯ РЕДАКТИРОВАНИЯ СООБЩЕНИЙ
+app.put('/api/messages/:messageId', async (req, res) => {
+  const { messageId } = req.params;
+  const { newText, userId, chatId } = req.body;
+
+  try {
+    console.log('✏️ Редактирование сообщения через API:', { messageId, newText });
+
+    const success = await updateMessage(messageId, newText);
+
+    if (success) {
+      broadcastToChat(chatId, {
+        type: 'message_edited',
+        messageId: messageId,
+        newText: newText,
+        editedAt: new Date().toISOString(),
+        editedBy: userId
+      });
+
+      res.json({
+        success: true,
+        message: 'Сообщение обновлено'
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: 'Ошибка обновления сообщения'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Ошибка редактирования:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера'
+    });
+  }
+});
+
 // 🚨 ЗАПУСК СЕРВЕРА
 server.listen(PORT, '0.0.0.0', async () => {
-  console.log('🚀 Anongram Server v6.4 запущен!');
+  console.log('🚀 Anongram Server v7.0 запущен!');
   console.log(`📍 Порт: ${PORT}`);
-  console.log('🗑️ Добавлено удаление сообщений');
+  console.log('✅ Добавлены функции:');
+  console.log('   🗑️  Удаление сообщений');
+  console.log('   🎭  Система реакций');
+  console.log('   ↩️   Ответы на сообщения');
+  console.log('   ✏️  Редактирование сообщений');
   console.log('🌐 Готов к работе!');
 });
