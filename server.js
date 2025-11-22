@@ -261,7 +261,6 @@ async function getUsers() {
 }
 
 // 🎯 ФУНКЦИИ ДЛЯ ЗАДАНИЙ
-
 async function getTasks() {
   const { data, error } = await supabase
     .from('tasks')
@@ -328,7 +327,20 @@ async function takeTask(userId, taskId) {
     return { success: false, error: 'Задание уже взято' };
   }
 
+  // Проверяем существует ли задание
+  const { data: task, error: taskError } = await supabase
+    .from('tasks')
+    .select('*')
+    .eq('id', taskId)
+    .eq('status', 'active')
+    .single();
+
+  if (taskError || !task) {
+    return { success: false, error: 'Задание не найдено или неактивно' };
+  }
+
   const userTask = {
+    id: generateId(), // Генерируем ID для user_tasks
     user_id: userId,
     task_id: taskId,
     status: 'in_progress',
@@ -439,8 +451,8 @@ async function submitProof(userId, taskId, proof) {
     return { success: false, error: 'Задание не найдено или уже отправлено' };
   }
 
-  return { 
-    success: true, 
+  return {
+    success: true,
     userTask: {
       id: data[0].id,
       user_id: data[0].user_id,
@@ -471,6 +483,134 @@ async function cancelTask(userId, taskId) {
   }
 
   return { success: true };
+}
+
+// 🎯 ДОПОЛНИТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ЗАДАНИЙ
+
+// Функция для проверки и завершения задания
+async function completeTask(userTaskId, approvedBy) {
+  // Получаем данные о задании пользователя
+  const { data: userTask, error: userTaskError } = await supabase
+    .from('user_tasks')
+    .select(`
+      *,
+      tasks (
+        coins,
+        experience,
+        title
+      ),
+      users (
+        username,
+        coins,
+        experience,
+        level
+      )
+    `)
+    .eq('id', userTaskId)
+    .single();
+
+  if (userTaskError || !userTask) {
+    console.error('❌ Ошибка загрузки задания пользователя:', userTaskError);
+    return { success: false, error: 'Задание не найдено' };
+  }
+
+  // Обновляем статус задания пользователя
+  const { error: updateError } = await supabase
+    .from('user_tasks')
+    .update({
+      status: 'completed',
+      completed_at: new Date().toISOString(),
+      reviewed_by: approvedBy
+    })
+    .eq('id', userTaskId);
+
+  if (updateError) {
+    console.error('❌ Ошибка обновления статуса задания:', updateError);
+    return { success: false, error: 'Ошибка обновления задания' };
+  }
+
+  // Начисляем награду пользователю
+  const newCoins = (userTask.users.coins || 0) + userTask.tasks.coins;
+  const newExperience = (userTask.users.experience || 0) + userTask.tasks.experience;
+
+  const { error: userUpdateError } = await supabase
+    .from('users')
+    .update({
+      coins: newCoins,
+      experience: newExperience
+    })
+    .eq('id', userTask.user_id);
+
+  if (userUpdateError) {
+    console.error('❌ Ошибка начисления награды:', userUpdateError);
+    return { success: false, error: 'Ошибка начисления награды' };
+  }
+
+  console.log(`✅ Задание завершено! Пользователь ${userTask.users.username} получил:`, {
+    coins: userTask.tasks.coins,
+    experience: userTask.tasks.experience,
+    newCoins: newCoins,
+    newExperience: newExperience
+  });
+
+  return {
+    success: true,
+    message: 'Задание завершено и награда выдана',
+    reward: {
+      coins: userTask.tasks.coins,
+      experience: userTask.tasks.experience,
+      newCoins: newCoins,
+      newExperience: newExperience
+    }
+  };
+}
+
+// Функция для отклонения доказательств
+async function rejectTask(userTaskId, feedback, rejectedBy) {
+  const { error } = await supabase
+    .from('user_tasks')
+    .update({
+      status: 'rejected',
+      feedback: feedback,
+      reviewed_by: rejectedBy,
+      completed_at: new Date().toISOString()
+    })
+    .eq('id', userTaskId);
+
+  if (error) {
+    console.error('❌ Ошибка отклонения задания:', error);
+    return { success: false, error: 'Ошибка отклонения задания' };
+  }
+
+  return { success: true, message: 'Задание отклонено' };
+}
+
+// Функция для получения заданий на проверку (только для админов)
+async function getPendingTasks() {
+  const { data, error } = await supabase
+    .from('user_tasks')
+    .select(`
+      *,
+      tasks (
+        title,
+        description,
+        coins,
+        experience,
+        profession
+      ),
+      users (
+        username
+      )
+    `)
+    .eq('status', 'pending_review')
+    .order('proof_submitted_at', { ascending: true });
+
+  if (error) {
+    console.error('❌ Ошибка загрузки заданий на проверку:', error);
+    return [];
+  }
+
+  return data || [];
 }
 
 // 🔗 WEBSOCKET
@@ -610,7 +750,6 @@ async function handleNewMessage(messageData) {
 
   if (savedMessage) {
     console.log('✅ Сообщение сохранено в базу');
-
     // Загружаем реакции для этого сообщения
     const reactions = await getMessageReactions(savedMessage.id);
     savedMessage.reactions = reactions;
@@ -1141,7 +1280,7 @@ app.post('/api/tasks', async (req, res) => {
   try {
     const taskData = req.body;
     const task = await createTask(taskData);
-    
+
     if (task) {
       res.json({
         success: true,
@@ -1167,7 +1306,7 @@ app.delete('/api/tasks/:taskId', async (req, res) => {
   try {
     const { taskId } = req.params;
     const success = await deleteTask(taskId);
-    
+
     if (success) {
       res.json({
         success: true,
@@ -1193,9 +1332,9 @@ app.post('/api/tasks/:taskId/take', async (req, res) => {
   try {
     const { taskId } = req.params;
     const { userId } = req.body;
-    
+
     const result = await takeTask(userId, taskId);
-    
+
     if (result.success) {
       res.json({
         success: true,
@@ -1221,7 +1360,7 @@ app.get('/api/users/:userId/tasks', async (req, res) => {
   try {
     const { userId } = req.params;
     const userTasks = await getUserTasks(userId);
-    
+
     res.json({
       success: true,
       userTasks: userTasks
@@ -1240,9 +1379,9 @@ app.post('/api/tasks/:taskId/proof', async (req, res) => {
   try {
     const { taskId } = req.params;
     const { userId, proof } = req.body;
-    
+
     const result = await submitProof(userId, taskId, proof);
-    
+
     if (result.success) {
       res.json({
         success: true,
@@ -1268,9 +1407,9 @@ app.post('/api/tasks/:taskId/cancel', async (req, res) => {
   try {
     const { taskId } = req.params;
     const { userId } = req.body;
-    
+
     const result = await cancelTask(userId, taskId);
-    
+
     if (result.success) {
       res.json({
         success: true,
@@ -1291,6 +1430,89 @@ app.post('/api/tasks/:taskId/cancel', async (req, res) => {
   }
 });
 
+// 🎯 ДОПОЛНИТЕЛЬНЫЕ API РОУТЫ
+
+// Получить задания на проверку (для админов)
+app.get('/api/tasks/pending', async (req, res) => {
+  try {
+    const pendingTasks = await getPendingTasks();
+    res.json({
+      success: true,
+      pendingTasks: pendingTasks
+    });
+  } catch (error) {
+    console.error('❌ Ошибка загрузки заданий на проверку:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка загрузки заданий на проверку'
+    });
+  }
+});
+
+// Завершить задание (одобрить доказательства)
+app.post('/api/tasks/:userTaskId/complete', async (req, res) => {
+  try {
+    const { userTaskId } = req.params;
+    const { approvedBy } = req.body;
+
+    const result = await completeTask(userTaskId, approvedBy);
+
+    if (result.success) {
+      // Рассылаем уведомление о завершении задания
+      broadcastToAll({
+        type: 'task_completed',
+        userTaskId: userTaskId,
+        reward: result.reward
+      });
+
+      res.json({
+        success: true,
+        message: result.message,
+        reward: result.reward
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: result.error
+      });
+    }
+  } catch (error) {
+    console.error('❌ Ошибка завершения задания:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка завершения задания'
+    });
+  }
+});
+
+// Отклонить задание
+app.post('/api/tasks/:userTaskId/reject', async (req, res) => {
+  try {
+    const { userTaskId } = req.params;
+    const { feedback, rejectedBy } = req.body;
+
+    const result = await rejectTask(userTaskId, feedback, rejectedBy);
+
+    if (result.success) {
+      res.json({
+        success: true,
+        message: result.message
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: result.error
+      });
+    }
+  } catch (error) {
+    console.error('❌ Ошибка отклонения задания:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка отклонения задания'
+    });
+  }
+});
+
 // 🚨 ЗАПУСК СЕРВЕРА
 server.listen(PORT, '0.0.0.0', async () => {
   console.log('🚀 Anongram Server v7.0 запущен!');
@@ -1303,3 +1525,4 @@ server.listen(PORT, '0.0.0.0', async () => {
   console.log('   🎯  Система заданий');
   console.log('🌐 Готов к работе!');
 });
+
