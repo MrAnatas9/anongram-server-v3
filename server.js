@@ -62,7 +62,9 @@ async function addMessage(message) {
       sticker_emoji: message.stickerEmoji,
       voice_url: message.voiceUrl,
       duration: message.duration,
-      file_info: message.fileInfo
+      file_info: message.fileInfo,
+      is_pinned: message.isPinned || false,
+      views: message.views || 1
     };
 
     const { data, error } = await supabase
@@ -837,6 +839,196 @@ app.post('/api/messages/:messageId/pin', async (req, res) => {
   }
 });
 
+// 👤 ПОЛЬЗОВАТЕЛИ
+app.post('/api/auth/check-code', async (req, res) => {
+  const { code } = req.body;
+
+  try {
+    console.log('🔍 Проверка кода доступа:', code);
+
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('accesscode', code)
+      .single();
+
+    if (error) {
+      console.log('📝 Код свободен для регистрации');
+      return res.json({
+        success: true,
+        userExists: false,
+        message: 'Код свободен'
+      });
+    }
+
+    console.log('✅ Найден пользователь:', data.username);
+    
+    // Обновляем lastseen
+    await supabase
+      .from('users')
+      .update({ 
+        isonline: true,
+        lastseen: new Date().toISOString()
+      })
+      .eq('id', data.id);
+
+    res.json({
+      success: true,
+      userExists: true,
+      user: {
+        id: data.id,
+        username: data.username,
+        level: data.level,
+        coins: data.coins,
+        experience: data.experience,
+        isAdmin: data.isadmin,
+        avatar: data.avatar
+      }
+    });
+  } catch (error) {
+    console.error('❌ Ошибка проверки кода:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера'
+    });
+  }
+});
+
+app.post('/api/auth/register', async (req, res) => {
+  const { username, code } = req.body;
+
+  try {
+    console.log('📝 Регистрация пользователя:', username, code);
+
+    // Проверяем, занят ли никнейм
+    const { data: existingUsername } = await supabase
+      .from('users')
+      .select('id')
+      .eq('username', username)
+      .single();
+
+    if (existingUsername) {
+      return res.status(400).json({
+        success: false,
+        error: 'Этот никнейм уже занят'
+      });
+    }
+
+    // Проверяем, занят ли код
+    const { data: existingCode } = await supabase
+      .from('users')
+      .select('id')
+      .eq('accesscode', code)
+      .single();
+
+    if (existingCode) {
+      return res.status(400).json({
+        success: false,
+        error: 'Этот код доступа уже используется'
+      });
+    }
+
+    const isAdmin = code === '654321';
+    const userId = generateId();
+
+    const userData = {
+      id: userId,
+      username: username,
+      accesscode: code,
+      level: isAdmin ? 10 : 1,
+      coins: isAdmin ? 999999 : 100,
+      experience: 0,
+      isonline: true,
+      lastseen: new Date().toISOString(),
+      createdat: new Date().toISOString(),
+      isadmin: isAdmin,
+      avatar: isAdmin ? '👑' : '👤'
+    };
+
+    const { data, error } = await supabase
+      .from('users')
+      .insert([userData])
+      .select();
+
+    if (error) {
+      console.error('❌ Ошибка создания пользователя:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Ошибка создания пользователя'
+      });
+    }
+
+    console.log('✅ Пользователь создан:', username);
+    res.json({
+      success: true,
+      user: {
+        id: data[0].id,
+        username: data[0].username,
+        level: data[0].level,
+        coins: data[0].coins,
+        experience: data[0].experience,
+        isAdmin: data[0].isadmin,
+        avatar: data[0].avatar
+      }
+    });
+  } catch (error) {
+    console.error('❌ Ошибка регистрации:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера'
+    });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  const { code } = req.body;
+
+  try {
+    console.log('🔐 Вход по коду:', code);
+
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('accesscode', code)
+      .single();
+
+    if (error) {
+      return res.status(400).json({
+        success: false,
+        error: 'Пользователь с таким кодом не найден'
+      });
+    }
+
+    // Обновляем lastseen
+    await supabase
+      .from('users')
+      .update({ 
+        isonline: true,
+        lastseen: new Date().toISOString()
+      })
+      .eq('id', data.id);
+
+    res.json({
+      success: true,
+      user: {
+        id: data.id,
+        username: data.username,
+        level: data.level,
+        coins: data.coins,
+        experience: data.experience,
+        isAdmin: data.isadmin,
+        avatar: data.avatar
+      }
+    });
+  } catch (error) {
+    console.error('❌ Ошибка входа:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера'
+    });
+  }
+});
+
 // 🚨 ЗАПУСК СЕРВЕРА
 server.listen(PORT, '0.0.0.0', async () => {
   console.log('🚀 Anongram Server v8.0 запущен!');
@@ -852,6 +1044,7 @@ server.listen(PORT, '0.0.0.0', async () => {
   
   console.log('✅ Функции:');
   console.log('   💬 Сохранение сообщений в Supabase');
+  console.log('   👤 Аутентификация пользователей');
   console.log('   🎭 Система реакций');
   console.log('   ✏️  Редактирование сообщений');
   console.log('   🗑️  Удаление сообщений');
