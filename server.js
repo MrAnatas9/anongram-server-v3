@@ -21,7 +21,7 @@ const supabase = createClient(
 // 📁 Настройка загрузки файлов
 const upload = multer({ 
   dest: 'uploads/',
-  limits: { fileSize: 50 * 1024 * 1024 } // 50MB
+  limits: { fileSize: 50 * 1024 * 1024 }
 });
 
 // Создаем папку для загрузок если её нет
@@ -205,7 +205,6 @@ async function addReaction(messageId, userId, reaction) {
   try {
     console.log('🎭 Добавление реакции в Supabase:', { messageId, userId, reaction });
 
-    // Сначала получаем текущие реакции
     const { data: message, error: getError } = await supabase
       .from('messages')
       .select('reactions')
@@ -235,7 +234,6 @@ async function addReaction(messageId, userId, reaction) {
     }
     reactions[reaction].push(userId);
 
-    // Сохраняем обновленные реакции
     const { error: updateError } = await supabase
       .from('messages')
       .update({ reactions })
@@ -258,7 +256,6 @@ async function removeReaction(messageId, userId, reaction) {
   try {
     console.log('🎭 Удаление реакции из Supabase:', { messageId, userId, reaction });
 
-    // Получаем текущие реакции
     const { data: message, error: getError } = await supabase
       .from('messages')
       .select('reactions')
@@ -272,7 +269,6 @@ async function removeReaction(messageId, userId, reaction) {
 
     const reactions = message.reactions || {};
     
-    // Удаляем реакцию пользователя
     if (reactions[reaction] && Array.isArray(reactions[reaction])) {
       reactions[reaction] = reactions[reaction].filter(id => id !== userId);
       if (reactions[reaction].length === 0) {
@@ -280,7 +276,6 @@ async function removeReaction(messageId, userId, reaction) {
       }
     }
 
-    // Сохраняем обновленные реакции
     const { error: updateError } = await supabase
       .from('messages')
       .update({ reactions })
@@ -414,8 +409,6 @@ function broadcastToAll(message) {
 // 💬 ОБРАБОТКА СООБЩЕНИЙ
 async function handleNewMessage(messageData) {
   try {
-    console.log('🔍 Обработка нового сообщения:', messageData);
-
     const {
       chatId, chatid,
       text,
@@ -433,7 +426,6 @@ async function handleNewMessage(messageData) {
       fileInfo
     } = messageData;
 
-    // Используем правильные поля
     const finalChatId = chatid || chatId || 'general';
     const finalUserId = userid || userId;
     const finalMessageId = id || messageId || generateId();
@@ -444,7 +436,6 @@ async function handleNewMessage(messageData) {
       return;
     }
 
-    // Создаем объект сообщения
     const message = {
       id: finalMessageId,
       userId: finalUserId,
@@ -477,13 +468,11 @@ async function handleNewMessage(messageData) {
       hasMedia: media.length > 0
     });
 
-    // Сохраняем в Supabase
     const savedMessage = await addMessage(message);
 
     if (savedMessage) {
       console.log('✅ Сообщение сохранено в базу');
 
-      // Рассылаем всем клиентам
       broadcastToChat(finalChatId, {
         type: 'new_message',
         message: savedMessage
@@ -504,7 +493,6 @@ async function handleAddReaction(data) {
     const success = await addReaction(messageId, userId, reaction);
 
     if (success) {
-      // Получаем обновленные реакции
       const { data: message } = await supabase
         .from('messages')
         .select('reactions')
@@ -532,7 +520,6 @@ async function handleRemoveReaction(data) {
     const success = await removeReaction(messageId, userId, reaction);
 
     if (success) {
-      // Получаем обновленные реакции
       const { data: message } = await supabase
         .from('messages')
         .select('reactions')
@@ -715,23 +702,6 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-// Проверка здоровья Supabase
-app.get('/api/health/supabase', async (req, res) => {
-  try {
-    const isConnected = await checkSupabaseConnection();
-    res.json({
-      success: isConnected,
-      message: isConnected ? 'Supabase подключен' : 'Supabase недоступен',
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: 'Ошибка проверки подключения'
-    });
-  }
-});
-
 // 📤 ЗАГРУЗКА ФАЙЛОВ
 app.post('/api/upload', upload.single('file'), async (req, res) => {
   try {
@@ -749,10 +719,8 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
       });
     }
 
-    // Определяем URL для доступа к файлу
     const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
     
-    // Определяем тип файла
     let fileType = req.body.type || 'file';
     if (req.file.mimetype.startsWith('image/')) fileType = 'photo';
     if (req.file.mimetype.startsWith('video/')) fileType = 'video';
@@ -853,7 +821,6 @@ app.delete('/api/messages/:messageId', async (req, res) => {
     const success = await deleteMessage(messageId);
 
     if (success) {
-      // Рассылаем уведомление о удалении
       broadcastToChat(chatId || 'general', {
         type: 'message_deleted',
         messageId: messageId,
@@ -929,7 +896,6 @@ app.post('/api/messages/:messageId/reactions', async (req, res) => {
     const success = await addReaction(messageId, userId, reaction);
 
     if (success) {
-      // Получаем обновленные реакции
       const { data: message } = await supabase
         .from('messages')
         .select('reactions')
@@ -973,7 +939,6 @@ app.delete('/api/messages/:messageId/reactions', async (req, res) => {
     const success = await removeReaction(messageId, userId, reaction);
 
     if (success) {
-      // Получаем обновленные реакции
       const { data: message } = await supabase
         .from('messages')
         .select('reactions')
@@ -1119,7 +1084,6 @@ app.post('/api/auth/check-code', async (req, res) => {
 
     console.log('✅ Найден пользователь:', data.username);
     
-    // Обновляем lastseen
     await supabase
       .from('users')
       .update({ 
@@ -1159,7 +1123,6 @@ app.post('/api/auth/register', async (req, res) => {
   try {
     console.log('📝 Регистрация пользователя:', username, code);
 
-    // Проверяем, занят ли никнейм
     const { data: existingUsername } = await supabase
       .from('users')
       .select('id')
@@ -1173,7 +1136,6 @@ app.post('/api/auth/register', async (req, res) => {
       });
     }
 
-    // Проверяем, занят ли код
     const { data: existingCode } = await supabase
       .from('users')
       .select('id')
@@ -1264,7 +1226,6 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
 
-    // Обновляем lastseen
     await supabase
       .from('users')
       .update({ 
@@ -1359,43 +1320,12 @@ app.get('/api/users/:userId', async (req, res) => {
   }
 });
 
-// 🎯 ЗАДАНИЯ (опционально)
-app.get('/api/tasks', async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from('tasks')
-      .select('*')
-      .eq('status', 'active')
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error('❌ Ошибка загрузки заданий:', error);
-      return res.status(500).json({
-        success: false,
-        error: 'Ошибка загрузки заданий'
-      });
-    }
-
-    res.json({
-      success: true,
-      tasks: data || []
-    });
-  } catch (error) {
-    console.error('❌ Ошибка загрузки заданий:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Ошибка сервера'
-    });
-  }
-});
-
 // 🚨 ЗАПУСК СЕРВЕРА
 server.listen(PORT, '0.0.0.0', async () => {
   console.log('🚀 Anongram Server v9.0 запущен!');
   console.log(`📍 Порт: ${PORT}`);
   console.log(`📁 Загрузки: http://localhost:${PORT}/uploads/`);
   
-  // Проверяем подключение к Supabase
   const supabaseConnected = await checkSupabaseConnection();
   if (supabaseConnected) {
     console.log('✅ Supabase подключен и готов к работе');
