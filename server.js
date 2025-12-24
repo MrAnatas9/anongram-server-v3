@@ -3,9 +3,6 @@ const cors = require('cors');
 const WebSocket = require('ws');
 const http = require('http');
 const { createClient } = require('@supabase/supabase-js');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
@@ -14,20 +11,9 @@ const PORT = process.env.PORT || 10000;
 
 // 🔗 Подключаем Supabase
 const supabase = createClient(
-  'https://ndyqahqoaaphvqmvnmgt.supabase.co',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5keXFhaHFvYWFwaHZxbXZubWd0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI5NjExODksImV4cCI6MjA3ODUzNzE4OX0.YIz8W8pvzGEkZOjKGu5SPijz9Y0zimzIlCocWeZEIuU'
+  process.env.SUPABASE_URL || 'https://ndyqahqoaaphvqmvnmgt.supabase.co',
+  process.env.SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5keXFhaHFvYWFwaHZxbXZubWd0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI5NjExODksImV4cCI6MjA3ODUzNzE4OX0.YIz8W8pvzGEkZOjKGu5SPijz9Y0zimzIlCocWeZEIuU'
 );
-
-// 📁 Настройка загрузки файлов
-const upload = multer({ 
-  dest: 'uploads/',
-  limits: { fileSize: 50 * 1024 * 1024 }
-});
-
-// Создаем папку для загрузок если её нет
-if (!fs.existsSync('uploads')) {
-  fs.mkdirSync('uploads');
-}
 
 // 🔧 Проверка подключения к Supabase
 async function checkSupabaseConnection() {
@@ -47,7 +33,6 @@ async function checkSupabaseConnection() {
 
 app.use(cors());
 app.use(express.json());
-app.use('/uploads', express.static('uploads'));
 
 // 🗄️ Функции для работы с Supabase
 async function addMessage(message) {
@@ -56,8 +41,7 @@ async function addMessage(message) {
       id: message.id,
       userid: message.userId,
       username: message.username,
-      text: message.text,
-      type: message.type
+      text: message.text
     });
 
     const messageData = {
@@ -80,8 +64,6 @@ async function addMessage(message) {
       duration: message.duration,
       file_info: message.fileInfo,
       is_pinned: message.isPinned || false,
-      pinned_at: message.isPinned ? new Date().toISOString() : null,
-      pinned_by: message.isPinned ? message.userId : null,
       views: message.views || 1
     };
 
@@ -103,7 +85,7 @@ async function addMessage(message) {
   }
 }
 
-async function getMessages(chatId, limit = 100) {
+async function getMessages(chatId) {
   try {
     console.log('📥 Загрузка сообщений из Supabase для чата:', chatId);
     
@@ -111,8 +93,7 @@ async function getMessages(chatId, limit = 100) {
       .from('messages')
       .select('*')
       .eq('chatid', chatId || 'general')
-      .order('timestamp', { ascending: true })
-      .limit(limit);
+      .order('timestamp', { ascending: true });
 
     if (error) {
       console.error('❌ Ошибка загрузки сообщений:', error);
@@ -123,30 +104,6 @@ async function getMessages(chatId, limit = 100) {
     return data || [];
   } catch (error) {
     console.error('❌ Ошибка при загрузке сообщений:', error);
-    return [];
-  }
-}
-
-async function getPinnedMessages(chatId) {
-  try {
-    console.log('📍 Загрузка закрепленных сообщений для чата:', chatId);
-    
-    const { data, error } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('chatid', chatId || 'general')
-      .eq('is_pinned', true)
-      .order('pinned_at', { ascending: false });
-
-    if (error) {
-      console.error('❌ Ошибка загрузки закрепленных сообщений:', error);
-      return [];
-    }
-    
-    console.log(`✅ Загружено ${data?.length || 0} закрепленных сообщений`);
-    return data || [];
-  } catch (error) {
-    console.error('❌ Ошибка при загрузке закрепленных:', error);
     return [];
   }
 }
@@ -205,6 +162,7 @@ async function addReaction(messageId, userId, reaction) {
   try {
     console.log('🎭 Добавление реакции в Supabase:', { messageId, userId, reaction });
 
+    // Сначала получаем текущие реакции
     const { data: message, error: getError } = await supabase
       .from('messages')
       .select('reactions')
@@ -234,6 +192,7 @@ async function addReaction(messageId, userId, reaction) {
     }
     reactions[reaction].push(userId);
 
+    // Сохраняем обновленные реакции
     const { error: updateError } = await supabase
       .from('messages')
       .update({ reactions })
@@ -256,6 +215,7 @@ async function removeReaction(messageId, userId, reaction) {
   try {
     console.log('🎭 Удаление реакции из Supabase:', { messageId, userId, reaction });
 
+    // Получаем текущие реакции
     const { data: message, error: getError } = await supabase
       .from('messages')
       .select('reactions')
@@ -269,6 +229,7 @@ async function removeReaction(messageId, userId, reaction) {
 
     const reactions = message.reactions || {};
     
+    // Удаляем реакцию пользователя
     if (reactions[reaction] && Array.isArray(reactions[reaction])) {
       reactions[reaction] = reactions[reaction].filter(id => id !== userId);
       if (reactions[reaction].length === 0) {
@@ -276,6 +237,7 @@ async function removeReaction(messageId, userId, reaction) {
       }
     }
 
+    // Сохраняем обновленные реакции
     const { error: updateError } = await supabase
       .from('messages')
       .update({ reactions })
@@ -327,23 +289,6 @@ wss.on('connection', (ws, req) => {
           break;
         case 'pin_message':
           await handlePinMessage(parsedData);
-          break;
-        case 'unpin_message':
-          await handleUnpinMessage(parsedData);
-          break;
-        case 'broadcast':
-          console.log('📡 Broadcast сообщение:', parsedData);
-          broadcastToAll(parsedData.data || parsedData);
-          break;
-        case 'identify':
-          console.log('👤 Идентификация клиента:', parsedData);
-          ws.send(JSON.stringify({
-            type: 'identified',
-            message: 'Клиент идентифицирован'
-          }));
-          break;
-        case 'typing':
-          await handleTyping(parsedData);
           break;
         default:
           console.log("📡 Неизвестный тип сообщения:", parsedData.type);
@@ -409,6 +354,8 @@ function broadcastToAll(message) {
 // 💬 ОБРАБОТКА СООБЩЕНИЙ
 async function handleNewMessage(messageData) {
   try {
+    console.log('🔍 Обработка нового сообщения:', messageData);
+
     const {
       chatId, chatid,
       text,
@@ -426,16 +373,18 @@ async function handleNewMessage(messageData) {
       fileInfo
     } = messageData;
 
+    // Используем правильные поля
     const finalChatId = chatid || chatId || 'general';
     const finalUserId = userid || userId;
     const finalMessageId = id || messageId || generateId();
     const finalReplyTo = reply_to || replyTo;
 
-    if (!text && type === 'text' && (!media || media.length === 0)) {
+    if (!text && type === 'text') {
       console.error('❌ Недостаточно данных для сообщения');
       return;
     }
 
+    // Создаем объект сообщения
     const message = {
       id: finalMessageId,
       userId: finalUserId,
@@ -454,9 +403,7 @@ async function handleNewMessage(messageData) {
       voiceUrl: voiceUrl,
       duration: duration,
       fileInfo: fileInfo,
-      reactions: {},
-      isPinned: false,
-      views: 1
+      reactions: {}
     };
 
     console.log('💬 Создано сообщение:', {
@@ -464,15 +411,16 @@ async function handleNewMessage(messageData) {
       userId: message.userId,
       username: message.username,
       text: message.text,
-      type: message.type,
-      hasMedia: media.length > 0
+      type: message.type
     });
 
+    // Сохраняем в Supabase
     const savedMessage = await addMessage(message);
 
     if (savedMessage) {
       console.log('✅ Сообщение сохранено в базу');
 
+      // Рассылаем всем клиентам
       broadcastToChat(finalChatId, {
         type: 'new_message',
         message: savedMessage
@@ -493,13 +441,14 @@ async function handleAddReaction(data) {
     const success = await addReaction(messageId, userId, reaction);
 
     if (success) {
+      // Получаем обновленные реакции
       const { data: message } = await supabase
         .from('messages')
         .select('reactions')
         .eq('id', messageId)
         .single();
 
-      broadcastToChat(chatId || 'general', {
+      broadcastToChat(chatId, {
         type: 'reaction_added',
         messageId: messageId,
         reactions: message?.reactions || {},
@@ -520,13 +469,14 @@ async function handleRemoveReaction(data) {
     const success = await removeReaction(messageId, userId, reaction);
 
     if (success) {
+      // Получаем обновленные реакции
       const { data: message } = await supabase
         .from('messages')
         .select('reactions')
         .eq('id', messageId)
         .single();
 
-      broadcastToChat(chatId || 'general', {
+      broadcastToChat(chatId, {
         type: 'reaction_removed',
         messageId: messageId,
         reactions: message?.reactions || {},
@@ -547,7 +497,7 @@ async function handleEditMessage(data) {
     const success = await updateMessage(messageId, newText, userId);
 
     if (success) {
-      broadcastToChat(chatId || 'general', {
+      broadcastToChat(chatId, {
         type: 'message_edited',
         messageId: messageId,
         newText: newText,
@@ -568,7 +518,7 @@ async function handleDeleteMessage(data) {
     const success = await deleteMessage(messageId);
 
     if (success) {
-      broadcastToChat(chatId || 'general', {
+      broadcastToChat(chatId, {
         type: 'message_deleted',
         messageId: messageId,
         chatId: chatId,
@@ -599,7 +549,7 @@ async function handlePinMessage(data) {
       return;
     }
 
-    broadcastToChat(chatId || 'general', {
+    broadcastToChat(chatId, {
       type: 'message_pinned',
       messageId: messageId,
       chatId: chatId,
@@ -607,52 +557,6 @@ async function handlePinMessage(data) {
     });
   } catch (error) {
     console.error('❌ Ошибка обработки закрепления:', error);
-  }
-}
-
-async function handleUnpinMessage(data) {
-  try {
-    const { messageId, chatId } = data;
-    console.log('📍 Обработка открепления сообщения:', { messageId, chatId });
-
-    const { error } = await supabase
-      .from('messages')
-      .update({
-        is_pinned: false,
-        pinned_at: null,
-        pinned_by: null
-      })
-      .eq('id', messageId);
-
-    if (error) {
-      console.error('❌ Ошибка открепления:', error);
-      return;
-    }
-
-    broadcastToChat(chatId || 'general', {
-      type: 'message_unpinned',
-      messageId: messageId,
-      chatId: chatId
-    });
-  } catch (error) {
-    console.error('❌ Ошибка обработки открепления:', error);
-  }
-}
-
-async function handleTyping(data) {
-  try {
-    const { chatId, userId, username, isTyping } = data;
-    console.log('⌨️ Обработка печатания:', { userId, username, isTyping });
-
-    broadcastToChat(chatId || 'general', {
-      type: 'typing',
-      userId: userId,
-      username: username,
-      isTyping: isTyping,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('❌ Ошибка обработки печатания:', error);
   }
 }
 
@@ -665,88 +569,26 @@ function generateId() {
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: '🚀 Anongram Server v9.0 (Full Supabase Integration)',
-    version: '9.0.0',
+    message: '🚀 Anongram Server v8.0 (Supabase Integration)',
+    version: '8.0.0',
     timestamp: new Date().toISOString(),
-    features: [
-      'supabase_storage',
-      'realtime_messages', 
-      'reactions', 
-      'editing',
-      'deleting',
-      'pinning',
-      'file_upload',
-      'voice_messages',
-      'polls',
-      'stickers'
-    ]
+    features: ['supabase', 'realtime_messages', 'reactions', 'editing', 'pinning']
   });
 });
 
-// Проверка здоровья
-app.get('/api/health', async (req, res) => {
+// Проверка здоровья Supabase
+app.get('/api/health/supabase', async (req, res) => {
   try {
-    const supabaseConnected = await checkSupabaseConnection();
+    const isConnected = await checkSupabaseConnection();
     res.json({
-      success: true,
-      status: 'running',
-      supabase: supabaseConnected ? 'connected' : 'disconnected',
-      timestamp: new Date().toISOString(),
-      uptime: process.uptime()
+      success: isConnected,
+      message: isConnected ? 'Supabase подключен' : 'Supabase недоступен',
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      error: 'Ошибка проверки здоровья'
-    });
-  }
-});
-
-// 📤 ЗАГРУЗКА ФАЙЛОВ
-app.post('/api/upload', upload.single('file'), async (req, res) => {
-  try {
-    console.log('📤 Загрузка файла:', {
-      originalname: req.file?.originalname,
-      mimetype: req.file?.mimetype,
-      size: req.file?.size,
-      type: req.body.type
-    });
-
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        error: 'Файл не загружен'
-      });
-    }
-
-    const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
-    
-    let fileType = req.body.type || 'file';
-    if (req.file.mimetype.startsWith('image/')) fileType = 'photo';
-    if (req.file.mimetype.startsWith('video/')) fileType = 'video';
-    if (req.file.mimetype.startsWith('audio/')) fileType = 'voice';
-
-    const fileInfo = {
-      name: req.file.originalname || `file_${Date.now()}`,
-      size: req.file.size,
-      type: req.file.mimetype,
-      url: fileUrl,
-      path: req.file.path
-    };
-
-    console.log('✅ Файл загружен:', fileInfo);
-
-    res.json({
-      success: true,
-      file: fileInfo,
-      type: fileType,
-      url: fileUrl
-    });
-  } catch (error) {
-    console.error('❌ Ошибка загрузки:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Ошибка загрузки файла' 
+      error: 'Ошибка проверки подключения'
     });
   }
 });
@@ -754,42 +596,19 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 // 💬 СООБЩЕНИЯ
 app.get('/api/messages/:chatId', async (req, res) => {
   const { chatId } = req.params;
-  const { limit = 100 } = req.query;
-  
   try {
-    const messages = await getMessages(chatId, parseInt(limit));
+    const messages = await getMessages(chatId);
     
     res.json({
       success: true,
-      messages: messages,
-      total: messages.length,
-      limit: parseInt(limit)
+      messages: messages.slice(-100), // Последние 100 сообщений
+      total: messages.length
     });
   } catch (error) {
     console.error('❌ Ошибка загрузки сообщений:', error);
     res.status(500).json({
       success: false,
       error: 'Ошибка загрузки сообщений'
-    });
-  }
-});
-
-app.get('/api/messages/:chatId/pinned', async (req, res) => {
-  const { chatId } = req.params;
-  
-  try {
-    const pinnedMessages = await getPinnedMessages(chatId);
-    
-    res.json({
-      success: true,
-      messages: pinnedMessages,
-      total: pinnedMessages.length
-    });
-  } catch (error) {
-    console.error('❌ Ошибка загрузки закрепленных сообщений:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Ошибка загрузки закрепленных сообщений'
     });
   }
 });
@@ -821,6 +640,7 @@ app.delete('/api/messages/:messageId', async (req, res) => {
     const success = await deleteMessage(messageId);
 
     if (success) {
+      // Рассылаем уведомление о удалении
       broadcastToChat(chatId || 'general', {
         type: 'message_deleted',
         messageId: messageId,
@@ -896,6 +716,7 @@ app.post('/api/messages/:messageId/reactions', async (req, res) => {
     const success = await addReaction(messageId, userId, reaction);
 
     if (success) {
+      // Получаем обновленные реакции
       const { data: message } = await supabase
         .from('messages')
         .select('reactions')
@@ -939,6 +760,7 @@ app.delete('/api/messages/:messageId/reactions', async (req, res) => {
     const success = await removeReaction(messageId, userId, reaction);
 
     if (success) {
+      // Получаем обновленные реакции
       const { data: message } = await supabase
         .from('messages')
         .select('reactions')
@@ -1017,49 +839,6 @@ app.post('/api/messages/:messageId/pin', async (req, res) => {
   }
 });
 
-app.post('/api/messages/:messageId/unpin', async (req, res) => {
-  const { messageId } = req.params;
-  const { chatId } = req.body;
-
-  try {
-    console.log('📍 API запрос на открепление сообщения:', messageId);
-
-    const { error } = await supabase
-      .from('messages')
-      .update({
-        is_pinned: false,
-        pinned_at: null,
-        pinned_by: null
-      })
-      .eq('id', messageId);
-
-    if (error) {
-      console.error('❌ Ошибка открепления:', error);
-      return res.status(500).json({
-        success: false,
-        error: 'Ошибка открепления сообщения'
-      });
-    }
-
-    broadcastToChat(chatId || 'general', {
-      type: 'message_unpinned',
-      messageId: messageId,
-      chatId: chatId
-    });
-
-    res.json({
-      success: true,
-      message: 'Сообщение откреплено'
-    });
-  } catch (error) {
-    console.error('❌ Ошибка открепления:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Ошибка сервера'
-    });
-  }
-});
-
 // 👤 ПОЛЬЗОВАТЕЛИ
 app.post('/api/auth/check-code', async (req, res) => {
   const { code } = req.body;
@@ -1084,6 +863,7 @@ app.post('/api/auth/check-code', async (req, res) => {
 
     console.log('✅ Найден пользователь:', data.username);
     
+    // Обновляем lastseen
     await supabase
       .from('users')
       .update({ 
@@ -1102,10 +882,7 @@ app.post('/api/auth/check-code', async (req, res) => {
         coins: data.coins,
         experience: data.experience,
         isAdmin: data.isadmin,
-        avatar: data.avatar,
-        profession: data.profession,
-        bio: data.bio,
-        color: data.color
+        avatar: data.avatar
       }
     });
   } catch (error) {
@@ -1123,6 +900,7 @@ app.post('/api/auth/register', async (req, res) => {
   try {
     console.log('📝 Регистрация пользователя:', username, code);
 
+    // Проверяем, занят ли никнейм
     const { data: existingUsername } = await supabase
       .from('users')
       .select('id')
@@ -1136,6 +914,7 @@ app.post('/api/auth/register', async (req, res) => {
       });
     }
 
+    // Проверяем, занят ли код
     const { data: existingCode } = await supabase
       .from('users')
       .select('id')
@@ -1163,10 +942,7 @@ app.post('/api/auth/register', async (req, res) => {
       lastseen: new Date().toISOString(),
       createdat: new Date().toISOString(),
       isadmin: isAdmin,
-      avatar: isAdmin ? '👑' : '👤',
-      profession: isAdmin ? '👑 Системный Админ' : 'Участник',
-      bio: isAdmin ? 'Главный администратор платформы' : 'Новый участник платформы',
-      color: isAdmin ? '#FF4444' : '#666666'
+      avatar: isAdmin ? '👑' : '👤'
     };
 
     const { data, error } = await supabase
@@ -1192,10 +968,7 @@ app.post('/api/auth/register', async (req, res) => {
         coins: data[0].coins,
         experience: data[0].experience,
         isAdmin: data[0].isadmin,
-        avatar: data[0].avatar,
-        profession: data[0].profession,
-        bio: data[0].bio,
-        color: data[0].color
+        avatar: data[0].avatar
       }
     });
   } catch (error) {
@@ -1226,6 +999,7 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
 
+    // Обновляем lastseen
     await supabase
       .from('users')
       .update({ 
@@ -1243,10 +1017,7 @@ app.post('/api/auth/login', async (req, res) => {
         coins: data.coins,
         experience: data.experience,
         isAdmin: data.isadmin,
-        avatar: data.avatar,
-        profession: data.profession,
-        bio: data.bio,
-        color: data.color
+        avatar: data.avatar
       }
     });
   } catch (error) {
@@ -1258,74 +1029,60 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// 👥 Список пользователей
-app.get('/api/users', async (req, res) => {
+// 📋 Проверка данных
+app.get('/api/debug/messages', async (req, res) => {
   try {
     const { data, error } = await supabase
-      .from('users')
-      .select('id, username, level, coins, experience, isonline, lastseen, isadmin, avatar')
-      .order('isonline', { ascending: false })
-      .order('level', { ascending: false });
+      .from('messages')
+      .select('*')
+      .limit(10);
 
     if (error) {
-      console.error('❌ Ошибка загрузки пользователей:', error);
-      return res.status(500).json({
-        success: false,
-        error: 'Ошибка загрузки пользователей'
-      });
+      console.error('❌ Ошибка получения сообщений:', error);
+      return res.status(500).json({ error: error.message });
     }
 
     res.json({
       success: true,
-      users: data || [],
-      total: data?.length || 0
+      count: data?.length || 0,
+      messages: data
     });
   } catch (error) {
-    console.error('❌ Ошибка загрузки пользователей:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Ошибка сервера'
-    });
+    console.error('❌ Ошибка debug:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// 👤 Профиль пользователя
-app.get('/api/users/:userId', async (req, res) => {
-  const { userId } = req.params;
-
+app.get('/api/debug/users', async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('users')
       .select('*')
-      .eq('id', userId)
-      .single();
+      .limit(10);
 
     if (error) {
-      return res.status(404).json({
-        success: false,
-        error: 'Пользователь не найден'
-      });
+      console.error('❌ Ошибка получения пользователей:', error);
+      return res.status(500).json({ error: error.message });
     }
 
     res.json({
       success: true,
-      user: data
+      count: data?.length || 0,
+      users: data
     });
   } catch (error) {
-    console.error('❌ Ошибка загрузки профиля:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Ошибка сервера'
-    });
+    console.error('❌ Ошибка debug:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
 // 🚨 ЗАПУСК СЕРВЕРА
 server.listen(PORT, '0.0.0.0', async () => {
-  console.log('🚀 Anongram Server v9.0 запущен!');
+  console.log('🚀 Anongram Server v8.0 запущен!');
   console.log(`📍 Порт: ${PORT}`);
-  console.log(`📁 Загрузки: http://localhost:${PORT}/uploads/`);
+  console.log(`🌐 URL: http://localhost:${PORT}`);
   
+  // Проверяем подключение к Supabase
   const supabaseConnected = await checkSupabaseConnection();
   if (supabaseConnected) {
     console.log('✅ Supabase подключен и готов к работе');
@@ -1335,22 +1092,10 @@ server.listen(PORT, '0.0.0.0', async () => {
   
   console.log('✅ Функции:');
   console.log('   💬 Сохранение сообщений в Supabase');
-  console.log('   📤 Загрузка файлов и медиа');
   console.log('   👤 Аутентификация пользователей');
   console.log('   🎭 Система реакций');
   console.log('   ✏️  Редактирование сообщений');
   console.log('   🗑️  Удаление сообщений');
   console.log('   📍 Закрепление сообщений');
-  console.log('   ⌨️  Индикация печатания');
-  console.log('   📡 WebSocket рассылка');
   console.log('🌐 Готов к работе!');
-});
-
-// Обработка ошибок сервера
-process.on('uncaughtException', (error) => {
-  console.error('❌ Необработанная ошибка:', error);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ Необработанный промис:', reason);
 });

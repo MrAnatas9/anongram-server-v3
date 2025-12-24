@@ -4,13 +4,14 @@
   "description": "Anongram Messenger Backend with Supabase",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "build": "npm install"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
     "cors": "^2.8.5",
     "express": "^4.21.2",
-    "ws": "^8.18.3",
-    "@supabase/supabase-js": "^2.49.1"
+    "ws": "^8.18.3"
   },
   "engines": {
     "node": ">=18.0.0"
