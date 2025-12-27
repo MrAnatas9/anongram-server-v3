@@ -11,8 +11,8 @@ const PORT = process.env.PORT || 10000;
 
 // 🔗 Подключаем Supabase
 const supabase = createClient(
-  process.env.SUPABASE_URL || 'https://ndyqahqoaaphvqmvnmgt.supabase.co',
-  process.env.SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5keXFhaHFvYWFwaHZxbXZubWd0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI5NjExODksImV4cCI6MjA3ODUzNzE4OX0.YIz8W8pvzGEkZOjKGu5SPijz9Y0zimzIlCocWeZEIuU'
+  'https://ndyqahqoaaphvqmvnmgt.supabase.co',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5keXFhaHFvYWFwaHZxbXZubWd0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI5NjExODksImV4cCI6MjA3ODUzNzE4OX0.YIz8W8pvzGEkZOjKGu5SPijz9Y0zimzIlCocWeZEIuU'
 );
 
 // 🔧 Проверка подключения к Supabase
@@ -31,8 +31,13 @@ async function checkSupabaseConnection() {
   }
 }
 
-app.use(cors());
-app.use(express.json());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // 🗄️ Функции для работы с Supabase
 async function addMessage(message) {
@@ -41,7 +46,8 @@ async function addMessage(message) {
       id: message.id,
       userid: message.userId,
       username: message.username,
-      text: message.text?.substring(0, 50)
+      text: message.text,
+      type: message.type
     });
 
     const messageData = {
@@ -85,7 +91,7 @@ async function addMessage(message) {
   }
 }
 
-async function getMessages(chatId) {
+async function getMessages(chatId, limit = 500) {
   try {
     console.log('📥 Загрузка сообщений из Supabase для чата:', chatId);
     
@@ -93,7 +99,8 @@ async function getMessages(chatId) {
       .from('messages')
       .select('*')
       .eq('chatid', chatId || 'general')
-      .order('timestamp', { ascending: true });
+      .order('timestamp', { ascending: true })
+      .limit(limit);
 
     if (error) {
       console.error('❌ Ошибка загрузки сообщений:', error);
@@ -256,19 +263,161 @@ async function removeReaction(messageId, userId, reaction) {
   }
 }
 
+async function pinMessage(messageId, userId, chatId) {
+  try {
+    console.log('📍 Закрепление сообщения:', { messageId, userId, chatId });
+
+    const { error } = await supabase
+      .from('messages')
+      .update({
+        is_pinned: true,
+        pinned_at: new Date().toISOString(),
+        pinned_by: userId
+      })
+      .eq('id', messageId);
+
+    if (error) {
+      console.error('❌ Ошибка закрепления:', error);
+      return false;
+    }
+
+    console.log('✅ Сообщение закреплено');
+    return true;
+  } catch (error) {
+    console.error('❌ Ошибка при закреплении:', error);
+    return false;
+  }
+}
+
+async function unpinMessage(messageId) {
+  try {
+    console.log('📍 Открепление сообщения:', messageId);
+
+    const { error } = await supabase
+      .from('messages')
+      .update({
+        is_pinned: false,
+        pinned_at: null,
+        pinned_by: null
+      })
+      .eq('id', messageId);
+
+    if (error) {
+      console.error('❌ Ошибка открепления:', error);
+      return false;
+    }
+
+    console.log('✅ Сообщение откреплено');
+    return true;
+  } catch (error) {
+    console.error('❌ Ошибка при откреплении:', error);
+    return false;
+  }
+}
+
+// 👤 Функции для пользователей
+async function getUserByAccessCode(code) {
+  try {
+    console.log('🔍 Поиск пользователя по коду:', code);
+
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('accesscode', code)
+      .single();
+
+    if (error) {
+      console.log('📝 Пользователь не найден');
+      return null;
+    }
+
+    console.log('✅ Пользователь найден:', data.username);
+    return data;
+  } catch (error) {
+    console.error('❌ Ошибка поиска пользователя:', error);
+    return null;
+  }
+}
+
+async function getUserByUsername(username) {
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('username', username)
+      .single();
+
+    if (error) return null;
+    return data;
+  } catch (error) {
+    console.error('❌ Ошибка поиска по имени:', error);
+    return null;
+  }
+}
+
+async function createUser(userData) {
+  try {
+    console.log('👤 Создание пользователя:', userData.username);
+
+    const { data, error } = await supabase
+      .from('users')
+      .insert([userData])
+      .select();
+
+    if (error) {
+      console.error('❌ Ошибка создания пользователя:', error);
+      return null;
+    }
+
+    console.log('✅ Пользователь создан:', userData.username);
+    return data ? data[0] : userData;
+  } catch (error) {
+    console.error('❌ Ошибка при создании пользователя:', error);
+    return null;
+  }
+}
+
+async function updateUserLastSeen(userId) {
+  try {
+    await supabase
+      .from('users')
+      .update({
+        isonline: true,
+        lastseen: new Date().toISOString()
+      })
+      .eq('id', userId);
+  } catch (error) {
+    console.error('❌ Ошибка обновления пользователя:', error);
+  }
+}
+
 // 🔗 WEBSOCKET
 let activeConnections = new Map();
+let connectionStats = {
+  total: 0,
+  active: 0,
+  reconnects: 0
+};
 
 wss.on('connection', (ws, req) => {
   const connectionId = generateId();
-  activeConnections.set(connectionId, ws);
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  
+  activeConnections.set(connectionId, { ws, ip, connectedAt: Date.now() });
+  connectionStats.total++;
+  connectionStats.active = activeConnections.size;
 
-  console.log('🔗 Новое WebSocket подключение:', connectionId);
+  console.log('🔗 Новое WebSocket подключение:', {
+    id: connectionId,
+    ip,
+    total: connectionStats.active,
+    url: req.url
+  });
 
   ws.on('message', async (message) => {
     try {
       const parsedData = JSON.parse(message);
-      console.log('📨 WebSocket сообщение:', parsedData.type);
+      console.log('📨 WebSocket сообщение от', connectionId + ':', parsedData.type);
 
       switch (parsedData.type) {
         case 'send_message':
@@ -290,71 +439,100 @@ wss.on('connection', (ws, req) => {
         case 'pin_message':
           await handlePinMessage(parsedData);
           break;
+        case 'unpin_message':
+          await handleUnpinMessage(parsedData);
+          break;
+        case 'typing':
+          handleTyping(parsedData);
+          break;
+        case 'ping':
+          ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
+          break;
         default:
           console.log("📡 Неизвестный тип сообщения:", parsedData.type);
           break;
       }
     } catch (error) {
-      console.error('❌ Ошибка обработки WebSocket сообщения:', error);
+      console.error('❌ Ошибка обработки WebSocket сообщения:', error, message);
     }
   });
 
-  ws.on('close', () => {
+  ws.on('close', (code, reason) => {
     activeConnections.delete(connectionId);
-    console.log('🔌 WebSocket соединение закрыто, осталось:', activeConnections.size);
+    connectionStats.active = activeConnections.size;
+    
+    console.log('🔌 WebSocket соединение закрыто:', {
+      id: connectionId,
+      code,
+      reason: reason.toString(),
+      active: connectionStats.active
+    });
   });
 
+  ws.on('error', (error) => {
+    console.error('❌ WebSocket ошибка:', { id: connectionId, error: error.message });
+  });
+
+  // Отправляем подтверждение подключения
   ws.send(JSON.stringify({
     type: 'connection_established',
     message: 'WebSocket подключен',
-    connectionId: connectionId
+    connectionId: connectionId,
+    timestamp: Date.now()
   }));
 });
 
 // 📢 ФУНКЦИИ РАССЫЛКИ
 function broadcastToChat(chatId, message) {
-  console.log(`📢 Рассылка в чат ${chatId}, соединений: ${activeConnections.size}`);
-
+  const chatConnections = Array.from(activeConnections.entries());
   let sentCount = 0;
-  activeConnections.forEach((ws, id) => {
-    if (ws.readyState === WebSocket.OPEN) {
+
+  chatConnections.forEach(([id, connection]) => {
+    if (connection.ws.readyState === WebSocket.OPEN) {
       try {
-        ws.send(JSON.stringify({
+        connection.ws.send(JSON.stringify({
           ...message,
-          chatId: chatId
+          chatId: chatId,
+          serverTime: Date.now()
         }));
         sentCount++;
       } catch (error) {
-        console.error('❌ Ошибка отправки сообщения клиенту:', error);
+        console.error('❌ Ошибка отправки сообщения клиенту:', id, error.message);
       }
     }
   });
 
-  console.log(`✅ Отправлено ${sentCount} клиентам`);
+  if (sentCount > 0) {
+    console.log(`📢 Рассылка в чат ${chatId}: ${sentCount}/${chatConnections.length} клиентов`);
+  }
 }
 
 function broadcastToAll(message) {
-  console.log(`📢 Рассылка всем: ${activeConnections.size} соединений`);
-
+  const allConnections = Array.from(activeConnections.values());
   let sentCount = 0;
-  activeConnections.forEach((ws, id) => {
-    if (ws.readyState === WebSocket.OPEN) {
+
+  allConnections.forEach(connection => {
+    if (connection.ws.readyState === WebSocket.OPEN) {
       try {
-        ws.send(JSON.stringify(message));
+        connection.ws.send(JSON.stringify(message));
         sentCount++;
       } catch (error) {
-        console.error('❌ Ошибка отправки сообщения клиенту:', error);
+        console.error('❌ Ошибка broadcast:', error.message);
       }
     }
   });
 
-  console.log(`✅ Отправлено ${sentCount} клиентам`);
+  console.log(`📢 Глобальная рассылка: ${sentCount}/${allConnections.length} клиентов`);
 }
 
 // 💬 ОБРАБОТКА СООБЩЕНИЙ
 async function handleNewMessage(messageData) {
   try {
-    console.log('🔍 Обработка нового сообщения:', messageData.type);
+    console.log('🔍 Обработка нового сообщения:', {
+      type: messageData.type,
+      chatId: messageData.chatId || messageData.chatid,
+      userId: messageData.userId || messageData.userid
+    });
 
     const {
       chatId, chatid,
@@ -375,18 +553,12 @@ async function handleNewMessage(messageData) {
 
     // Используем правильные поля
     const finalChatId = chatid || chatId || 'general';
-    const finalUserId = userid || userId || 'unknown';
+    const finalUserId = userid || userId;
     const finalMessageId = id || messageId || generateId();
     const finalReplyTo = reply_to || replyTo;
 
-    // Проверяем обязательные поля
-    if (!text && type === 'text') {
+    if (!text && type === 'text' && (!media || media.length === 0)) {
       console.error('❌ Недостаточно данных для сообщения');
-      return;
-    }
-
-    if (!finalUserId || finalUserId === 'unknown') {
-      console.error('❌ Отсутствует userId');
       return;
     }
 
@@ -412,23 +584,17 @@ async function handleNewMessage(messageData) {
       reactions: {}
     };
 
-    console.log('💬 Создано сообщение:', {
-      id: message.id,
-      userId: message.userId,
-      username: message.username,
-      text: message.text?.substring(0, 30)
-    });
-
     // Сохраняем в Supabase
     const savedMessage = await addMessage(message);
 
     if (savedMessage) {
-      console.log('✅ Сообщение сохранено в базу');
+      console.log('✅ Сообщение сохранено в базу:', savedMessage.id);
 
-      // Рассылаем всем клиентам
+      // Рассылаем всем клиентам в этом чате
       broadcastToChat(finalChatId, {
         type: 'new_message',
-        message: savedMessage
+        message: savedMessage,
+        serverTimestamp: Date.now()
       });
     } else {
       console.error('❌ Не удалось сохранить сообщение в базу');
@@ -453,12 +619,13 @@ async function handleAddReaction(data) {
         .eq('id', messageId)
         .single();
 
-      broadcastToChat(chatId || 'general', {
+      broadcastToChat(chatId, {
         type: 'reaction_added',
         messageId: messageId,
         reactions: message?.reactions || {},
         userId: userId,
-        reaction: reaction
+        reaction: reaction,
+        serverTimestamp: Date.now()
       });
     }
   } catch (error) {
@@ -481,12 +648,13 @@ async function handleRemoveReaction(data) {
         .eq('id', messageId)
         .single();
 
-      broadcastToChat(chatId || 'general', {
+      broadcastToChat(chatId, {
         type: 'reaction_removed',
         messageId: messageId,
         reactions: message?.reactions || {},
         userId: userId,
-        reaction: reaction
+        reaction: reaction,
+        serverTimestamp: Date.now()
       });
     }
   } catch (error) {
@@ -502,12 +670,13 @@ async function handleEditMessage(data) {
     const success = await updateMessage(messageId, newText, userId);
 
     if (success) {
-      broadcastToChat(chatId || 'general', {
+      broadcastToChat(chatId, {
         type: 'message_edited',
         messageId: messageId,
         newText: newText,
         editedAt: new Date().toISOString(),
-        editedBy: userId
+        editedBy: userId,
+        serverTimestamp: Date.now()
       });
     }
   } catch (error) {
@@ -523,11 +692,12 @@ async function handleDeleteMessage(data) {
     const success = await deleteMessage(messageId);
 
     if (success) {
-      broadcastToChat(chatId || 'general', {
+      broadcastToChat(chatId, {
         type: 'message_deleted',
         messageId: messageId,
         chatId: chatId,
-        deletedBy: userId
+        deletedBy: userId,
+        serverTimestamp: Date.now()
       });
     }
   } catch (error) {
@@ -540,28 +710,56 @@ async function handlePinMessage(data) {
     const { messageId, chatId, userId } = data;
     console.log('📍 Обработка закрепления сообщения:', { messageId, chatId, userId });
 
-    const { error } = await supabase
-      .from('messages')
-      .update({
-        is_pinned: true,
-        pinned_at: new Date().toISOString(),
-        pinned_by: userId
-      })
-      .eq('id', messageId);
+    const success = await pinMessage(messageId, userId, chatId);
 
-    if (error) {
-      console.error('❌ Ошибка закрепления:', error);
-      return;
+    if (success) {
+      broadcastToChat(chatId, {
+        type: 'message_pinned',
+        messageId: messageId,
+        chatId: chatId,
+        pinnedBy: userId,
+        serverTimestamp: Date.now()
+      });
     }
-
-    broadcastToChat(chatId || 'general', {
-      type: 'message_pinned',
-      messageId: messageId,
-      chatId: chatId,
-      pinnedBy: userId
-    });
   } catch (error) {
     console.error('❌ Ошибка обработки закрепления:', error);
+  }
+}
+
+async function handleUnpinMessage(data) {
+  try {
+    const { messageId, chatId, userId } = data;
+    console.log('📍 Обработка открепления сообщения:', { messageId, chatId, userId });
+
+    const success = await unpinMessage(messageId);
+
+    if (success) {
+      broadcastToChat(chatId, {
+        type: 'message_unpinned',
+        messageId: messageId,
+        chatId: chatId,
+        unpinnedBy: userId,
+        serverTimestamp: Date.now()
+      });
+    }
+  } catch (error) {
+    console.error('❌ Ошибка обработки открепления:', error);
+  }
+}
+
+function handleTyping(data) {
+  try {
+    const { chatId, userId, username, isTyping } = data;
+    
+    broadcastToChat(chatId, {
+      type: 'typing',
+      userId: userId,
+      username: username,
+      isTyping: isTyping,
+      timestamp: Date.now()
+    });
+  } catch (error) {
+    console.error('❌ Ошибка обработки typing:', error);
   }
 }
 
@@ -574,27 +772,70 @@ function generateId() {
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: '🚀 Anongram Server (Supabase Integration)',
-    version: '1.0.0',
+    message: '🚀 Anongram Server v8.0 (Full Supabase Integration)',
+    version: '8.0.0',
     timestamp: new Date().toISOString(),
-    features: ['supabase', 'realtime_messages', 'reactions', 'editing', 'pinning']
+    serverTime: Date.now(),
+    features: [
+      'supabase',
+      'realtime_messages',
+      'reactions', 
+      'editing',
+      'pinning',
+      'media',
+      'polls',
+      'stickers',
+      'voice_messages',
+      'web_sockets',
+      'user_auth'
+    ],
+    stats: {
+      connections: connectionStats.active,
+      totalConnections: connectionStats.total,
+      uptime: process.uptime()
+    }
   });
 });
 
 // Проверка здоровья
 app.get('/api/health', async (req, res) => {
   try {
-    const isConnected = await checkSupabaseConnection();
+    const supabaseConnected = await checkSupabaseConnection();
+    
     res.json({
-      success: isConnected,
-      message: isConnected ? 'Сервер работает' : 'Ошибка подключения',
+      success: true,
+      status: 'ok',
       timestamp: new Date().toISOString(),
-      connections: activeConnections.size
+      supabase: supabaseConnected ? 'connected' : 'disconnected',
+      websockets: {
+        active: connectionStats.active,
+        total: connectionStats.total
+      },
+      memory: process.memoryUsage(),
+      uptime: process.uptime()
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      error: 'Ошибка сервера'
+      error: 'Health check failed',
+      message: error.message
+    });
+  }
+});
+
+// Проверка Supabase
+app.get('/api/health/supabase', async (req, res) => {
+  try {
+    const isConnected = await checkSupabaseConnection();
+    res.json({
+      success: isConnected,
+      message: isConnected ? 'Supabase подключен' : 'Supabase недоступен',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка проверки подключения'
     });
   }
 });
@@ -602,41 +843,73 @@ app.get('/api/health', async (req, res) => {
 // 💬 СООБЩЕНИЯ
 app.get('/api/messages/:chatId', async (req, res) => {
   const { chatId } = req.params;
-  const limit = parseInt(req.query.limit) || 100;
+  const { limit = 500 } = req.query;
   
   try {
-    const messages = await getMessages(chatId);
+    console.log(`📥 API запрос сообщений для чата ${chatId}, лимит: ${limit}`);
     
-    // Ограничиваем количество сообщений
-    const limitedMessages = messages.slice(-limit);
+    const messages = await getMessages(chatId, parseInt(limit));
     
     res.json({
       success: true,
-      messages: limitedMessages,
+      messages: messages,
       total: messages.length,
-      limited: limitedMessages.length
+      chatId: chatId,
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error('❌ Ошибка загрузки сообщений:', error);
     res.status(500).json({
       success: false,
-      error: 'Ошибка загрузки сообщений'
+      error: 'Ошибка загрузки сообщений',
+      message: error.message
     });
+  }
+});
+
+app.get('/api/messages/:chatId/pinned', async (req, res) => {
+  const { chatId } = req.params;
+  
+  try {
+    const { data, error } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('chatid', chatId || 'general')
+      .eq('is_pinned', true)
+      .order('pinned_at', { ascending: false });
+
+    if (error) {
+      console.error('❌ Ошибка загрузки закрепленных:', error);
+      return res.status(500).json({ success: false, error: error.message });
+    }
+
+    res.json({
+      success: true,
+      pinnedMessages: data || [],
+      count: data?.length || 0
+    });
+  } catch (error) {
+    console.error('❌ Ошибка:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
 app.post('/api/messages', async (req, res) => {
   try {
+    console.log('📤 API запрос отправки сообщения:', req.body.type);
     await handleNewMessage(req.body);
+    
     res.json({
       success: true,
-      message: 'Сообщение отправлено'
+      message: 'Сообщение отправлено',
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error('❌ Ошибка отправки сообщения:', error);
     res.status(500).json({
       success: false,
-      error: 'Ошибка отправки сообщения'
+      error: 'Ошибка отправки сообщения',
+      message: error.message
     });
   }
 });
@@ -657,12 +930,14 @@ app.delete('/api/messages/:messageId', async (req, res) => {
         type: 'message_deleted',
         messageId: messageId,
         chatId: chatId,
-        deletedBy: userId
+        deletedBy: userId,
+        serverTimestamp: Date.now()
       });
 
       res.json({
         success: true,
-        message: 'Сообщение удалено'
+        message: 'Сообщение удалено',
+        messageId: messageId
       });
     } else {
       res.status(500).json({
@@ -674,7 +949,8 @@ app.delete('/api/messages/:messageId', async (req, res) => {
     console.error('❌ Ошибка удаления:', error);
     res.status(500).json({
       success: false,
-      error: 'Ошибка сервера'
+      error: 'Ошибка сервера',
+      message: error.message
     });
   }
 });
@@ -695,12 +971,14 @@ app.put('/api/messages/:messageId', async (req, res) => {
         messageId: messageId,
         newText: newText,
         editedAt: new Date().toISOString(),
-        editedBy: userId
+        editedBy: userId,
+        serverTimestamp: Date.now()
       });
 
       res.json({
         success: true,
-        message: 'Сообщение обновлено'
+        message: 'Сообщение обновлено',
+        messageId: messageId
       });
     } else {
       res.status(500).json({
@@ -712,7 +990,8 @@ app.put('/api/messages/:messageId', async (req, res) => {
     console.error('❌ Ошибка редактирования:', error);
     res.status(500).json({
       success: false,
-      error: 'Ошибка сервера'
+      error: 'Ошибка сервера',
+      message: error.message
     });
   }
 });
@@ -740,12 +1019,14 @@ app.post('/api/messages/:messageId/reactions', async (req, res) => {
         messageId: messageId,
         reactions: message?.reactions || {},
         userId: userId,
-        reaction: reaction
+        reaction: reaction,
+        serverTimestamp: Date.now()
       });
 
       res.json({
         success: true,
-        reactions: message?.reactions || {}
+        reactions: message?.reactions || {},
+        messageId: messageId
       });
     } else {
       res.status(500).json({
@@ -757,7 +1038,8 @@ app.post('/api/messages/:messageId/reactions', async (req, res) => {
     console.error('❌ Ошибка добавления реакции:', error);
     res.status(500).json({
       success: false,
-      error: 'Ошибка сервера'
+      error: 'Ошибка сервера',
+      message: error.message
     });
   }
 });
@@ -784,12 +1066,14 @@ app.delete('/api/messages/:messageId/reactions', async (req, res) => {
         messageId: messageId,
         reactions: message?.reactions || {},
         userId: userId,
-        reaction: reaction
+        reaction: reaction,
+        serverTimestamp: Date.now()
       });
 
       res.json({
         success: true,
-        reactions: message?.reactions || {}
+        reactions: message?.reactions || {},
+        messageId: messageId
       });
     } else {
       res.status(500).json({
@@ -801,7 +1085,8 @@ app.delete('/api/messages/:messageId/reactions', async (req, res) => {
     console.error('❌ Ошибка удаления реакции:', error);
     res.status(500).json({
       success: false,
-      error: 'Ошибка сервера'
+      error: 'Ошибка сервера',
+      message: error.message
     });
   }
 });
@@ -814,44 +1099,218 @@ app.post('/api/messages/:messageId/pin', async (req, res) => {
   try {
     console.log('📍 API запрос на закрепление сообщения:', { messageId, userId });
 
-    const { error } = await supabase
-      .from('messages')
-      .update({
-        is_pinned: true,
-        pinned_at: new Date().toISOString(),
-        pinned_by: userId
-      })
-      .eq('id', messageId);
+    const success = await pinMessage(messageId, userId, chatId);
 
-    if (error) {
-      console.error('❌ Ошибка закрепления:', error);
-      return res.status(500).json({
+    if (success) {
+      broadcastToChat(chatId || 'general', {
+        type: 'message_pinned',
+        messageId: messageId,
+        chatId: chatId,
+        pinnedBy: userId,
+        serverTimestamp: Date.now()
+      });
+
+      res.json({
+        success: true,
+        message: 'Сообщение закреплено',
+        messageId: messageId
+      });
+    } else {
+      res.status(500).json({
         success: false,
         error: 'Ошибка закрепления сообщения'
       });
     }
-
-    broadcastToChat(chatId || 'general', {
-      type: 'message_pinned',
-      messageId: messageId,
-      chatId: chatId,
-      pinnedBy: userId
-    });
-
-    res.json({
-      success: true,
-      message: 'Сообщение закреплено'
-    });
   } catch (error) {
     console.error('❌ Ошибка закрепления:', error);
     res.status(500).json({
       success: false,
-      error: 'Ошибка сервера'
+      error: 'Ошибка сервера',
+      message: error.message
     });
   }
 });
 
-// 👤 АВТОРИЗАЦИЯ (упрощенная)
+app.post('/api/messages/:messageId/unpin', async (req, res) => {
+  const { messageId } = req.params;
+  const { chatId, userId } = req.body;
+
+  try {
+    console.log('📍 API запрос на открепление сообщения:', { messageId, userId });
+
+    const success = await unpinMessage(messageId);
+
+    if (success) {
+      broadcastToChat(chatId || 'general', {
+        type: 'message_unpinned',
+        messageId: messageId,
+        chatId: chatId,
+        unpinnedBy: userId,
+        serverTimestamp: Date.now()
+      });
+
+      res.json({
+        success: true,
+        message: 'Сообщение откреплено',
+        messageId: messageId
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: 'Ошибка открепления сообщения'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Ошибка открепления:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера',
+      message: error.message
+    });
+  }
+});
+
+// 👤 АУТЕНТИФИКАЦИЯ
+app.post('/api/auth/check-code', async (req, res) => {
+  const { code } = req.body;
+
+  try {
+    console.log('🔍 Проверка кода доступа:', code);
+
+    if (!code) {
+      return res.status(400).json({
+        success: false,
+        error: 'Код обязателен'
+      });
+    }
+
+    const user = await getUserByAccessCode(code);
+
+    if (user) {
+      console.log('✅ Найден существующий пользователь:', user.username);
+      
+      await updateUserLastSeen(user.id);
+
+      res.json({
+        success: true,
+        userExists: true,
+        user: {
+          id: user.id,
+          username: user.username,
+          level: user.level || 1,
+          coins: user.coins || 100,
+          experience: user.experience || 0,
+          isAdmin: user.isadmin || false,
+          avatar: user.avatar || '👤',
+          profession: user.profession,
+          bio: user.bio,
+          color: user.color || '#666666'
+        }
+      });
+    } else {
+      console.log('📝 Код свободен для регистрации');
+      res.json({
+        success: true,
+        userExists: false,
+        message: 'Код свободен'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Ошибка проверки кода:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера',
+      message: error.message
+    });
+  }
+});
+
+app.post('/api/auth/register', async (req, res) => {
+  const { username, code } = req.body;
+
+  try {
+    console.log('📝 Регистрация пользователя:', { username, code });
+
+    if (!username || !code) {
+      return res.status(400).json({
+        success: false,
+        error: 'Имя пользователя и код обязательны'
+      });
+    }
+
+    // Проверяем, занят ли никнейм
+    const existingUsername = await getUserByUsername(username);
+    if (existingUsername) {
+      return res.status(400).json({
+        success: false,
+        error: 'Этот никнейм уже занят'
+      });
+    }
+
+    // Проверяем, занят ли код
+    const existingCode = await getUserByAccessCode(code);
+    if (existingCode) {
+      return res.status(400).json({
+        success: false,
+        error: 'Этот код доступа уже используется'
+      });
+    }
+
+    const isAdmin = code === '654321';
+    const userId = generateId();
+
+    const userData = {
+      id: userId,
+      username: username.trim(),
+      accesscode: code,
+      level: isAdmin ? 10 : 1,
+      coins: isAdmin ? 999999 : 100,
+      experience: 0,
+      isonline: true,
+      lastseen: new Date().toISOString(),
+      createdat: new Date().toISOString(),
+      isadmin: isAdmin,
+      avatar: isAdmin ? '👑' : '👤',
+      profession: isAdmin ? '👑 Системный Админ' : 'Участник',
+      bio: isAdmin ? 'Главный администратор платформы' : 'Новый участник',
+      color: isAdmin ? '#FF4444' : '#666666'
+    };
+
+    const savedUser = await createUser(userData);
+
+    if (savedUser) {
+      console.log('✅ Пользователь создан:', username);
+      res.json({
+        success: true,
+        user: {
+          id: savedUser.id,
+          username: savedUser.username,
+          level: savedUser.level,
+          coins: savedUser.coins,
+          experience: savedUser.experience,
+          isAdmin: savedUser.isadmin,
+          avatar: savedUser.avatar,
+          profession: savedUser.profession,
+          bio: savedUser.bio,
+          color: savedUser.color
+        }
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: 'Ошибка создания пользователя'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Ошибка регистрации:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера',
+      message: error.message
+    });
+  }
+});
+
 app.post('/api/auth/login', async (req, res) => {
   const { code } = req.body;
 
@@ -865,76 +1324,155 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
 
-    // В демо-режиме создаем временного пользователя
-    const userId = `user_${code}`;
-    const isAdmin = code === '654321';
+    const user = await getUserByAccessCode(code);
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        error: 'Пользователь с таким кодом не найден'
+      });
+    }
+
+    await updateUserLastSeen(user.id);
 
     res.json({
       success: true,
       user: {
-        id: userId,
-        username: code === '654321' ? 'Admin' : `User_${code.substring(0, 3)}`,
-        level: isAdmin ? 10 : 1,
-        coins: isAdmin ? 999999 : 100,
-        experience: 0,
-        isAdmin: isAdmin,
-        avatar: isAdmin ? '👑' : '👤'
+        id: user.id,
+        username: user.username,
+        level: user.level || 1,
+        coins: user.coins || 100,
+        experience: user.experience || 0,
+        isAdmin: user.isadmin || false,
+        avatar: user.avatar || '👤',
+        profession: user.profession,
+        bio: user.bio,
+        color: user.color || '#666666'
       }
     });
   } catch (error) {
     console.error('❌ Ошибка входа:', error);
     res.status(500).json({
       success: false,
-      error: 'Ошибка сервера'
+      error: 'Ошибка сервера',
+      message: error.message
     });
   }
 });
 
-// 📊 ДЕБАГ
-app.get('/api/debug/stats', async (req, res) => {
+// 👥 ПОЛЬЗОВАТЕЛИ
+app.get('/api/users', async (req, res) => {
   try {
-    // Получаем статистику сообщений
-    const { data: messages, error: messagesError } = await supabase
-      .from('messages')
-      .select('chatid, is_pinned')
-      .limit(1000);
+    const { data, error } = await supabase
+      .from('users')
+      .select('id, username, level, coins, experience, isonline, lastseen, isadmin, avatar, profession, color')
+      .order('level', { ascending: false })
+      .limit(100);
 
-    const stats = {
-      connections: activeConnections.size,
-      messages: {
-        total: messages?.length || 0,
-        byChat: {},
-        pinned: messages?.filter(m => m.is_pinned).length || 0
-      }
-    };
-
-    // Группируем по чатам
-    if (messages) {
-      messages.forEach(msg => {
-        const chat = msg.chatid || 'unknown';
-        stats.messages.byChat[chat] = (stats.messages.byChat[chat] || 0) + 1;
-      });
+    if (error) {
+      console.error('❌ Ошибка загрузки пользователей:', error);
+      return res.status(500).json({ success: false, error: error.message });
     }
 
     res.json({
       success: true,
-      stats,
+      users: data || [],
+      total: data?.length || 0,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('❌ Ошибка получения статистики:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    console.error('❌ Ошибка:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
+});
+
+app.get('/api/users/:userId', async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', userId)
+      .single();
+
+    if (error) {
+      console.error('❌ Ошибка загрузки пользователя:', error);
+      return res.status(404).json({ success: false, error: 'Пользователь не найден' });
+    }
+
+    res.json({
+      success: true,
+      user: {
+        id: data.id,
+        username: data.username,
+        level: data.level,
+        coins: data.coins,
+        experience: data.experience,
+        isAdmin: data.isadmin,
+        avatar: data.avatar,
+        profession: data.profession,
+        bio: data.bio,
+        color: data.color,
+        isOnline: data.isonline,
+        lastSeen: data.lastseen,
+        createdAt: data.createdat
+      }
+    });
+  } catch (error) {
+    console.error('❌ Ошибка:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 📊 ДЕБАГ
+app.get('/api/debug/messages', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('messages')
+      .select('*')
+      .limit(10);
+
+    if (error) {
+      console.error('❌ Ошибка получения сообщений:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.json({
+      success: true,
+      count: data?.length || 0,
+      messages: data,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Ошибка debug:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/debug/connections', (req, res) => {
+  const connections = Array.from(activeConnections.entries()).map(([id, conn]) => ({
+    id,
+    ip: conn.ip,
+    connectedAt: conn.connectedAt,
+    duration: Date.now() - conn.connectedAt,
+    readyState: conn.ws.readyState
+  }));
+
+  res.json({
+    success: true,
+    connections: connections,
+    stats: connectionStats,
+    timestamp: Date.now()
+  });
 });
 
 // 🚨 ЗАПУСК СЕРВЕРА
 server.listen(PORT, '0.0.0.0', async () => {
-  console.log('🚀 Anongram Server запущен!');
+  console.log('🚀 Anongram Server v8.0 запущен!');
   console.log(`📍 Порт: ${PORT}`);
   console.log(`🌐 URL: http://localhost:${PORT}`);
+  console.log(`🕒 Время запуска: ${new Date().toISOString()}`);
   
   // Проверяем подключение к Supabase
   const supabaseConnected = await checkSupabaseConnection();
@@ -946,9 +1484,42 @@ server.listen(PORT, '0.0.0.0', async () => {
   
   console.log('✅ Функции:');
   console.log('   💬 Сохранение сообщений в Supabase');
+  console.log('   👤 Аутентификация пользователей');
   console.log('   🎭 Система реакций');
   console.log('   ✏️  Редактирование сообщений');
   console.log('   🗑️  Удаление сообщений');
   console.log('   📍 Закрепление сообщений');
+  console.log('   📊 Медиа и файлы');
+  console.log('   📱 WebSocket в реальном времени');
+  console.log('   🌐 CORS включен');
   console.log('🌐 Готов к работе!');
+});
+
+// Обработка ошибок
+process.on('uncaughtException', (error) => {
+  console.error('❌ Необработанное исключение:', error);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Необработанный промис:', reason);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('🔄 Получен SIGTERM, завершение работы...');
+  
+  // Закрываем WebSocket соединения
+  wss.clients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.close(1000, 'Server shutdown');
+    }
+  });
+  
+  wss.close(() => {
+    console.log('✅ WebSocket сервер закрыт');
+    server.close(() => {
+      console.log('✅ HTTP сервер закрыт');
+      process.exit(0);
+    });
+  });
 });
