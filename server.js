@@ -41,7 +41,7 @@ async function addMessage(message) {
       id: message.id,
       userid: message.userId,
       username: message.username,
-      text: message.text
+      text: message.text?.substring(0, 50)
     });
 
     const messageData = {
@@ -354,7 +354,7 @@ function broadcastToAll(message) {
 // 💬 ОБРАБОТКА СООБЩЕНИЙ
 async function handleNewMessage(messageData) {
   try {
-    console.log('🔍 Обработка нового сообщения:', messageData);
+    console.log('🔍 Обработка нового сообщения:', messageData.type);
 
     const {
       chatId, chatid,
@@ -375,12 +375,18 @@ async function handleNewMessage(messageData) {
 
     // Используем правильные поля
     const finalChatId = chatid || chatId || 'general';
-    const finalUserId = userid || userId;
+    const finalUserId = userid || userId || 'unknown';
     const finalMessageId = id || messageId || generateId();
     const finalReplyTo = reply_to || replyTo;
 
+    // Проверяем обязательные поля
     if (!text && type === 'text') {
       console.error('❌ Недостаточно данных для сообщения');
+      return;
+    }
+
+    if (!finalUserId || finalUserId === 'unknown') {
+      console.error('❌ Отсутствует userId');
       return;
     }
 
@@ -410,8 +416,7 @@ async function handleNewMessage(messageData) {
       id: message.id,
       userId: message.userId,
       username: message.username,
-      text: message.text,
-      type: message.type
+      text: message.text?.substring(0, 30)
     });
 
     // Сохраняем в Supabase
@@ -448,7 +453,7 @@ async function handleAddReaction(data) {
         .eq('id', messageId)
         .single();
 
-      broadcastToChat(chatId, {
+      broadcastToChat(chatId || 'general', {
         type: 'reaction_added',
         messageId: messageId,
         reactions: message?.reactions || {},
@@ -476,7 +481,7 @@ async function handleRemoveReaction(data) {
         .eq('id', messageId)
         .single();
 
-      broadcastToChat(chatId, {
+      broadcastToChat(chatId || 'general', {
         type: 'reaction_removed',
         messageId: messageId,
         reactions: message?.reactions || {},
@@ -497,7 +502,7 @@ async function handleEditMessage(data) {
     const success = await updateMessage(messageId, newText, userId);
 
     if (success) {
-      broadcastToChat(chatId, {
+      broadcastToChat(chatId || 'general', {
         type: 'message_edited',
         messageId: messageId,
         newText: newText,
@@ -518,7 +523,7 @@ async function handleDeleteMessage(data) {
     const success = await deleteMessage(messageId);
 
     if (success) {
-      broadcastToChat(chatId, {
+      broadcastToChat(chatId || 'general', {
         type: 'message_deleted',
         messageId: messageId,
         chatId: chatId,
@@ -549,7 +554,7 @@ async function handlePinMessage(data) {
       return;
     }
 
-    broadcastToChat(chatId, {
+    broadcastToChat(chatId || 'general', {
       type: 'message_pinned',
       messageId: messageId,
       chatId: chatId,
@@ -569,26 +574,27 @@ function generateId() {
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: '🚀 Anongram Server v8.0 (Supabase Integration)',
-    version: '8.0.0',
+    message: '🚀 Anongram Server (Supabase Integration)',
+    version: '1.0.0',
     timestamp: new Date().toISOString(),
     features: ['supabase', 'realtime_messages', 'reactions', 'editing', 'pinning']
   });
 });
 
-// Проверка здоровья Supabase
-app.get('/api/health/supabase', async (req, res) => {
+// Проверка здоровья
+app.get('/api/health', async (req, res) => {
   try {
     const isConnected = await checkSupabaseConnection();
     res.json({
       success: isConnected,
-      message: isConnected ? 'Supabase подключен' : 'Supabase недоступен',
-      timestamp: new Date().toISOString()
+      message: isConnected ? 'Сервер работает' : 'Ошибка подключения',
+      timestamp: new Date().toISOString(),
+      connections: activeConnections.size
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      error: 'Ошибка проверки подключения'
+      error: 'Ошибка сервера'
     });
   }
 });
@@ -596,13 +602,19 @@ app.get('/api/health/supabase', async (req, res) => {
 // 💬 СООБЩЕНИЯ
 app.get('/api/messages/:chatId', async (req, res) => {
   const { chatId } = req.params;
+  const limit = parseInt(req.query.limit) || 100;
+  
   try {
     const messages = await getMessages(chatId);
     
+    // Ограничиваем количество сообщений
+    const limitedMessages = messages.slice(-limit);
+    
     res.json({
       success: true,
-      messages: messages.slice(-100), // Последние 100 сообщений
-      total: messages.length
+      messages: limitedMessages,
+      total: messages.length,
+      limited: limitedMessages.length
     });
   } catch (error) {
     console.error('❌ Ошибка загрузки сообщений:', error);
@@ -839,185 +851,34 @@ app.post('/api/messages/:messageId/pin', async (req, res) => {
   }
 });
 
-// 👤 ПОЛЬЗОВАТЕЛИ
-app.post('/api/auth/check-code', async (req, res) => {
-  const { code } = req.body;
-
-  try {
-    console.log('🔍 Проверка кода доступа:', code);
-
-    const { data, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('accesscode', code)
-      .single();
-
-    if (error) {
-      console.log('📝 Код свободен для регистрации');
-      return res.json({
-        success: true,
-        userExists: false,
-        message: 'Код свободен'
-      });
-    }
-
-    console.log('✅ Найден пользователь:', data.username);
-    
-    // Обновляем lastseen
-    await supabase
-      .from('users')
-      .update({ 
-        isonline: true,
-        lastseen: new Date().toISOString()
-      })
-      .eq('id', data.id);
-
-    res.json({
-      success: true,
-      userExists: true,
-      user: {
-        id: data.id,
-        username: data.username,
-        level: data.level,
-        coins: data.coins,
-        experience: data.experience,
-        isAdmin: data.isadmin,
-        avatar: data.avatar
-      }
-    });
-  } catch (error) {
-    console.error('❌ Ошибка проверки кода:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Ошибка сервера'
-    });
-  }
-});
-
-app.post('/api/auth/register', async (req, res) => {
-  const { username, code } = req.body;
-
-  try {
-    console.log('📝 Регистрация пользователя:', username, code);
-
-    // Проверяем, занят ли никнейм
-    const { data: existingUsername } = await supabase
-      .from('users')
-      .select('id')
-      .eq('username', username)
-      .single();
-
-    if (existingUsername) {
-      return res.status(400).json({
-        success: false,
-        error: 'Этот никнейм уже занят'
-      });
-    }
-
-    // Проверяем, занят ли код
-    const { data: existingCode } = await supabase
-      .from('users')
-      .select('id')
-      .eq('accesscode', code)
-      .single();
-
-    if (existingCode) {
-      return res.status(400).json({
-        success: false,
-        error: 'Этот код доступа уже используется'
-      });
-    }
-
-    const isAdmin = code === '654321';
-    const userId = generateId();
-
-    const userData = {
-      id: userId,
-      username: username,
-      accesscode: code,
-      level: isAdmin ? 10 : 1,
-      coins: isAdmin ? 999999 : 100,
-      experience: 0,
-      isonline: true,
-      lastseen: new Date().toISOString(),
-      createdat: new Date().toISOString(),
-      isadmin: isAdmin,
-      avatar: isAdmin ? '👑' : '👤'
-    };
-
-    const { data, error } = await supabase
-      .from('users')
-      .insert([userData])
-      .select();
-
-    if (error) {
-      console.error('❌ Ошибка создания пользователя:', error);
-      return res.status(500).json({
-        success: false,
-        error: 'Ошибка создания пользователя'
-      });
-    }
-
-    console.log('✅ Пользователь создан:', username);
-    res.json({
-      success: true,
-      user: {
-        id: data[0].id,
-        username: data[0].username,
-        level: data[0].level,
-        coins: data[0].coins,
-        experience: data[0].experience,
-        isAdmin: data[0].isadmin,
-        avatar: data[0].avatar
-      }
-    });
-  } catch (error) {
-    console.error('❌ Ошибка регистрации:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Ошибка сервера'
-    });
-  }
-});
-
+// 👤 АВТОРИЗАЦИЯ (упрощенная)
 app.post('/api/auth/login', async (req, res) => {
   const { code } = req.body;
 
   try {
     console.log('🔐 Вход по коду:', code);
 
-    const { data, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('accesscode', code)
-      .single();
-
-    if (error) {
+    if (!code) {
       return res.status(400).json({
         success: false,
-        error: 'Пользователь с таким кодом не найден'
+        error: 'Код обязателен'
       });
     }
 
-    // Обновляем lastseen
-    await supabase
-      .from('users')
-      .update({ 
-        isonline: true,
-        lastseen: new Date().toISOString()
-      })
-      .eq('id', data.id);
+    // В демо-режиме создаем временного пользователя
+    const userId = `user_${code}`;
+    const isAdmin = code === '654321';
 
     res.json({
       success: true,
       user: {
-        id: data.id,
-        username: data.username,
-        level: data.level,
-        coins: data.coins,
-        experience: data.experience,
-        isAdmin: data.isadmin,
-        avatar: data.avatar
+        id: userId,
+        username: code === '654321' ? 'Admin' : `User_${code.substring(0, 3)}`,
+        level: isAdmin ? 10 : 1,
+        coins: isAdmin ? 999999 : 100,
+        experience: 0,
+        isAdmin: isAdmin,
+        avatar: isAdmin ? '👑' : '👤'
       }
     });
   } catch (error) {
@@ -1029,56 +890,49 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// 📋 Проверка данных
-app.get('/api/debug/messages', async (req, res) => {
+// 📊 ДЕБАГ
+app.get('/api/debug/stats', async (req, res) => {
   try {
-    const { data, error } = await supabase
+    // Получаем статистику сообщений
+    const { data: messages, error: messagesError } = await supabase
       .from('messages')
-      .select('*')
-      .limit(10);
+      .select('chatid, is_pinned')
+      .limit(1000);
 
-    if (error) {
-      console.error('❌ Ошибка получения сообщений:', error);
-      return res.status(500).json({ error: error.message });
+    const stats = {
+      connections: activeConnections.size,
+      messages: {
+        total: messages?.length || 0,
+        byChat: {},
+        pinned: messages?.filter(m => m.is_pinned).length || 0
+      }
+    };
+
+    // Группируем по чатам
+    if (messages) {
+      messages.forEach(msg => {
+        const chat = msg.chatid || 'unknown';
+        stats.messages.byChat[chat] = (stats.messages.byChat[chat] || 0) + 1;
+      });
     }
 
     res.json({
       success: true,
-      count: data?.length || 0,
-      messages: data
+      stats,
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('❌ Ошибка debug:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/debug/users', async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from('users')
-      .select('*')
-      .limit(10);
-
-    if (error) {
-      console.error('❌ Ошибка получения пользователей:', error);
-      return res.status(500).json({ error: error.message });
-    }
-
-    res.json({
-      success: true,
-      count: data?.length || 0,
-      users: data
+    console.error('❌ Ошибка получения статистики:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
-  } catch (error) {
-    console.error('❌ Ошибка debug:', error);
-    res.status(500).json({ error: error.message });
   }
 });
 
 // 🚨 ЗАПУСК СЕРВЕРА
 server.listen(PORT, '0.0.0.0', async () => {
-  console.log('🚀 Anongram Server v8.0 запущен!');
+  console.log('🚀 Anongram Server запущен!');
   console.log(`📍 Порт: ${PORT}`);
   console.log(`🌐 URL: http://localhost:${PORT}`);
   
@@ -1092,7 +946,6 @@ server.listen(PORT, '0.0.0.0', async () => {
   
   console.log('✅ Функции:');
   console.log('   💬 Сохранение сообщений в Supabase');
-  console.log('   👤 Аутентификация пользователей');
   console.log('   🎭 Система реакций');
   console.log('   ✏️  Редактирование сообщений');
   console.log('   🗑️  Удаление сообщений');
