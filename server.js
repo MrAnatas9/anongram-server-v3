@@ -15,6 +15,10 @@ const supabase = createClient(
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5keXFhaHFvYWFwaHZxbXZubWd0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI5NjExODksImV4cCI6MjA3ODUzNzE4OX0.YIz8W8pvzGEkZOjKGu5SPijz9Y0zimzIlCocWeZEIuU'
 );
 
+// 🔧 Кэш отправленных сообщений на сервере
+const sentMessageIds = new Set();
+const userConnections = new Map(); // userId -> connectionId
+
 // 🔧 Проверка подключения к Supabase
 async function checkSupabaseConnection() {
   try {
@@ -46,15 +50,27 @@ async function addMessage(message) {
       id: message.id,
       userid: message.userId,
       username: message.username,
-      text: message.text,
+      text: message.text?.substring(0, 30),
       type: message.type
     });
+
+    // Проверяем, не было ли уже такое сообщение
+    const { data: existing } = await supabase
+      .from('messages')
+      .select('id')
+      .eq('id', message.id)
+      .single();
+
+    if (existing) {
+      console.log('🔄 Сообщение уже существует в БД, пропускаем');
+      return existing;
+    }
 
     const messageData = {
       id: message.id,
       userid: message.userId,
       username: message.username,
-      text: message.text,
+      text: message.text || '',
       chatid: message.chatId || 'general',
       timestamp: message.timestamp || new Date().toISOString(),
       time: message.time || new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
@@ -84,6 +100,10 @@ async function addMessage(message) {
     }
     
     console.log('✅ Сообщение сохранено в Supabase:', data[0].id);
+    
+    // Добавляем ID в кэш
+    sentMessageIds.add(data[0].id);
+    
     return data ? data[0] : message;
   } catch (error) {
     console.error('❌ Неожиданная ошибка при сохранении:', error);
@@ -108,6 +128,12 @@ async function getMessages(chatId, limit = 500) {
     }
     
     console.log(`✅ Загружено ${data?.length || 0} сообщений из Supabase`);
+    
+    // Добавляем ID в кэш
+    if (data) {
+      data.forEach(msg => sentMessageIds.add(msg.id));
+    }
+    
     return data || [];
   } catch (error) {
     console.error('❌ Ошибка при загрузке сообщений:', error);
@@ -129,6 +155,9 @@ async function deleteMessage(messageId) {
       return false;
     }
 
+    // Удаляем из кэша
+    sentMessageIds.delete(messageId);
+    
     console.log('✅ Сообщение удалено из Supabase');
     return true;
   } catch (error) {
@@ -139,7 +168,7 @@ async function deleteMessage(messageId) {
 
 async function updateMessage(messageId, newText, userId) {
   try {
-    console.log('✏️ Обновление сообщения в Supabase:', messageId, newText);
+    console.log('✏️ Обновление сообщения в Supabase:', messageId);
 
     const { error } = await supabase
       .from('messages')
@@ -169,7 +198,6 @@ async function addReaction(messageId, userId, reaction) {
   try {
     console.log('🎭 Добавление реакции в Supabase:', { messageId, userId, reaction });
 
-    // Сначала получаем текущие реакции
     const { data: message, error: getError } = await supabase
       .from('messages')
       .select('reactions')
@@ -199,7 +227,6 @@ async function addReaction(messageId, userId, reaction) {
     }
     reactions[reaction].push(userId);
 
-    // Сохраняем обновленные реакции
     const { error: updateError } = await supabase
       .from('messages')
       .update({ reactions })
@@ -222,7 +249,6 @@ async function removeReaction(messageId, userId, reaction) {
   try {
     console.log('🎭 Удаление реакции из Supabase:', { messageId, userId, reaction });
 
-    // Получаем текущие реакции
     const { data: message, error: getError } = await supabase
       .from('messages')
       .select('reactions')
@@ -236,7 +262,6 @@ async function removeReaction(messageId, userId, reaction) {
 
     const reactions = message.reactions || {};
     
-    // Удаляем реакцию пользователя
     if (reactions[reaction] && Array.isArray(reactions[reaction])) {
       reactions[reaction] = reactions[reaction].filter(id => id !== userId);
       if (reactions[reaction].length === 0) {
@@ -244,7 +269,6 @@ async function removeReaction(messageId, userId, reaction) {
       }
     }
 
-    // Сохраняем обновленные реакции
     const { error: updateError } = await supabase
       .from('messages')
       .update({ reactions })
@@ -392,37 +416,62 @@ async function updateUserLastSeen(userId) {
 }
 
 // 🔗 WEBSOCKET
-let activeConnections = new Map();
+let activeConnections = new Map(); // connectionId -> { ws, userId, chatId }
 let connectionStats = {
   total: 0,
-  active: 0,
-  reconnects: 0
+  active: 0
 };
 
 wss.on('connection', (ws, req) => {
   const connectionId = generateId();
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   
-  activeConnections.set(connectionId, { ws, ip, connectedAt: Date.now() });
+  activeConnections.set(connectionId, { 
+    ws, 
+    ip, 
+    connectedAt: Date.now(),
+    userId: null,
+    chatId: null
+  });
+  
   connectionStats.total++;
   connectionStats.active = activeConnections.size;
 
   console.log('🔗 Новое WebSocket подключение:', {
     id: connectionId,
     ip,
-    total: connectionStats.active,
-    url: req.url
+    total: connectionStats.active
   });
+
+  // Отправляем подтверждение подключения
+  ws.send(JSON.stringify({
+    type: 'connection_established',
+    connectionId: connectionId,
+    timestamp: Date.now()
+  }));
 
   ws.on('message', async (message) => {
     try {
       const parsedData = JSON.parse(message);
       console.log('📨 WebSocket сообщение от', connectionId + ':', parsedData.type);
 
+      // Сохраняем userId и chatId если есть
+      if (parsedData.userId) {
+        const conn = activeConnections.get(connectionId);
+        if (conn) {
+          conn.userId = parsedData.userId;
+          conn.chatId = parsedData.chatId;
+          activeConnections.set(connectionId, conn);
+          
+          // Сохраняем связь userId -> connectionId
+          userConnections.set(parsedData.userId, connectionId);
+        }
+      }
+
       switch (parsedData.type) {
         case 'send_message':
         case 'new_message':
-          await handleNewMessage(parsedData);
+          await handleNewMessage(parsedData, connectionId);
           break;
         case 'add_reaction':
           await handleAddReaction(parsedData);
@@ -450,14 +499,18 @@ wss.on('connection', (ws, req) => {
           break;
         default:
           console.log("📡 Неизвестный тип сообщения:", parsedData.type);
-          break;
       }
     } catch (error) {
-      console.error('❌ Ошибка обработки WebSocket сообщения:', error, message);
+      console.error('❌ Ошибка обработки WebSocket сообщения:', error);
     }
   });
 
   ws.on('close', (code, reason) => {
+    const conn = activeConnections.get(connectionId);
+    if (conn && conn.userId) {
+      userConnections.delete(conn.userId);
+    }
+    
     activeConnections.delete(connectionId);
     connectionStats.active = activeConnections.size;
     
@@ -472,22 +525,19 @@ wss.on('connection', (ws, req) => {
   ws.on('error', (error) => {
     console.error('❌ WebSocket ошибка:', { id: connectionId, error: error.message });
   });
-
-  // Отправляем подтверждение подключения
-  ws.send(JSON.stringify({
-    type: 'connection_established',
-    message: 'WebSocket подключен',
-    connectionId: connectionId,
-    timestamp: Date.now()
-  }));
 });
 
-// 📢 ФУНКЦИИ РАССЫЛКИ
-function broadcastToChat(chatId, message) {
+// 📢 ФУНКЦИИ РАССЫЛКИ (без дубликатов)
+function broadcastToChat(chatId, message, excludeConnectionId = null) {
   const chatConnections = Array.from(activeConnections.entries());
   let sentCount = 0;
 
   chatConnections.forEach(([id, connection]) => {
+    // Пропускаем отправителя если нужно
+    if (excludeConnectionId && id === excludeConnectionId) {
+      return;
+    }
+    
     if (connection.ws.readyState === WebSocket.OPEN) {
       try {
         connection.ws.send(JSON.stringify({
@@ -497,43 +547,19 @@ function broadcastToChat(chatId, message) {
         }));
         sentCount++;
       } catch (error) {
-        console.error('❌ Ошибка отправки сообщения клиенту:', id, error.message);
+        console.error('❌ Ошибка отправки клиенту:', id, error.message);
       }
     }
   });
 
   if (sentCount > 0) {
-    console.log(`📢 Рассылка в чат ${chatId}: ${sentCount}/${chatConnections.length} клиентов`);
+    console.log(`📢 Рассылка в чат ${chatId}: ${sentCount} клиентов (исключая отправителя)`);
   }
 }
 
-function broadcastToAll(message) {
-  const allConnections = Array.from(activeConnections.values());
-  let sentCount = 0;
-
-  allConnections.forEach(connection => {
-    if (connection.ws.readyState === WebSocket.OPEN) {
-      try {
-        connection.ws.send(JSON.stringify(message));
-        sentCount++;
-      } catch (error) {
-        console.error('❌ Ошибка broadcast:', error.message);
-      }
-    }
-  });
-
-  console.log(`📢 Глобальная рассылка: ${sentCount}/${allConnections.length} клиентов`);
-}
-
 // 💬 ОБРАБОТКА СООБЩЕНИЙ
-async function handleNewMessage(messageData) {
+async function handleNewMessage(messageData, senderConnectionId) {
   try {
-    console.log('🔍 Обработка нового сообщения:', {
-      type: messageData.type,
-      chatId: messageData.chatId || messageData.chatid,
-      userId: messageData.userId || messageData.userid
-    });
-
     const {
       chatId, chatid,
       text,
@@ -551,18 +577,22 @@ async function handleNewMessage(messageData) {
       fileInfo
     } = messageData;
 
-    // Используем правильные поля
     const finalChatId = chatid || chatId || 'general';
     const finalUserId = userid || userId;
     const finalMessageId = id || messageId || generateId();
     const finalReplyTo = reply_to || replyTo;
+
+    // Проверяем, не было ли уже такое сообщение
+    if (sentMessageIds.has(finalMessageId)) {
+      console.log('🔄 Дубликат сообщения, пропускаем:', finalMessageId);
+      return;
+    }
 
     if (!text && type === 'text' && (!media || media.length === 0)) {
       console.error('❌ Недостаточно данных для сообщения');
       return;
     }
 
-    // Создаем объект сообщения
     const message = {
       id: finalMessageId,
       userId: finalUserId,
@@ -590,14 +620,24 @@ async function handleNewMessage(messageData) {
     if (savedMessage) {
       console.log('✅ Сообщение сохранено в базу:', savedMessage.id);
 
-      // Рассылаем всем клиентам в этом чате
+      // Рассылаем всем КРОМЕ отправителя
       broadcastToChat(finalChatId, {
         type: 'new_message',
         message: savedMessage,
         serverTimestamp: Date.now()
-      });
-    } else {
-      console.error('❌ Не удалось сохранить сообщение в базу');
+      }, senderConnectionId);
+      
+      // Отправляем подтверждение отправителю
+      const senderConn = Array.from(activeConnections.entries())
+        .find(([id, conn]) => id === senderConnectionId);
+      
+      if (senderConn) {
+        senderConn[1].ws.send(JSON.stringify({
+          type: 'message_sent',
+          messageId: savedMessage.id,
+          serverTimestamp: Date.now()
+        }));
+      }
     }
   } catch (error) {
     console.error('❌ Ошибка обработки нового сообщения:', error);
@@ -607,12 +647,10 @@ async function handleNewMessage(messageData) {
 async function handleAddReaction(data) {
   try {
     const { messageId, userId, reaction, chatId } = data;
-    console.log('🎭 Обработка добавления реакции:', { messageId, userId, reaction });
-
+    
     const success = await addReaction(messageId, userId, reaction);
 
     if (success) {
-      // Получаем обновленные реакции
       const { data: message } = await supabase
         .from('messages')
         .select('reactions')
@@ -624,8 +662,7 @@ async function handleAddReaction(data) {
         messageId: messageId,
         reactions: message?.reactions || {},
         userId: userId,
-        reaction: reaction,
-        serverTimestamp: Date.now()
+        reaction: reaction
       });
     }
   } catch (error) {
@@ -636,12 +673,10 @@ async function handleAddReaction(data) {
 async function handleRemoveReaction(data) {
   try {
     const { messageId, userId, reaction, chatId } = data;
-    console.log('🎭 Обработка удаления реакции:', { messageId, userId, reaction });
 
     const success = await removeReaction(messageId, userId, reaction);
 
     if (success) {
-      // Получаем обновленные реакции
       const { data: message } = await supabase
         .from('messages')
         .select('reactions')
@@ -653,8 +688,7 @@ async function handleRemoveReaction(data) {
         messageId: messageId,
         reactions: message?.reactions || {},
         userId: userId,
-        reaction: reaction,
-        serverTimestamp: Date.now()
+        reaction: reaction
       });
     }
   } catch (error) {
@@ -665,7 +699,6 @@ async function handleRemoveReaction(data) {
 async function handleEditMessage(data) {
   try {
     const { messageId, newText, userId, chatId } = data;
-    console.log('✏️ Обработка редактирования сообщения:', { messageId, newText, userId });
 
     const success = await updateMessage(messageId, newText, userId);
 
@@ -675,8 +708,7 @@ async function handleEditMessage(data) {
         messageId: messageId,
         newText: newText,
         editedAt: new Date().toISOString(),
-        editedBy: userId,
-        serverTimestamp: Date.now()
+        editedBy: userId
       });
     }
   } catch (error) {
@@ -687,7 +719,6 @@ async function handleEditMessage(data) {
 async function handleDeleteMessage(data) {
   try {
     const { messageId, chatId, userId } = data;
-    console.log('🗑️ Обработка удаления сообщения:', { messageId, chatId, userId });
 
     const success = await deleteMessage(messageId);
 
@@ -696,8 +727,7 @@ async function handleDeleteMessage(data) {
         type: 'message_deleted',
         messageId: messageId,
         chatId: chatId,
-        deletedBy: userId,
-        serverTimestamp: Date.now()
+        deletedBy: userId
       });
     }
   } catch (error) {
@@ -708,7 +738,6 @@ async function handleDeleteMessage(data) {
 async function handlePinMessage(data) {
   try {
     const { messageId, chatId, userId } = data;
-    console.log('📍 Обработка закрепления сообщения:', { messageId, chatId, userId });
 
     const success = await pinMessage(messageId, userId, chatId);
 
@@ -717,8 +746,7 @@ async function handlePinMessage(data) {
         type: 'message_pinned',
         messageId: messageId,
         chatId: chatId,
-        pinnedBy: userId,
-        serverTimestamp: Date.now()
+        pinnedBy: userId
       });
     }
   } catch (error) {
@@ -729,7 +757,6 @@ async function handlePinMessage(data) {
 async function handleUnpinMessage(data) {
   try {
     const { messageId, chatId, userId } = data;
-    console.log('📍 Обработка открепления сообщения:', { messageId, chatId, userId });
 
     const success = await unpinMessage(messageId);
 
@@ -738,8 +765,7 @@ async function handleUnpinMessage(data) {
         type: 'message_unpinned',
         messageId: messageId,
         chatId: chatId,
-        unpinnedBy: userId,
-        serverTimestamp: Date.now()
+        unpinnedBy: userId
       });
     }
   } catch (error) {
@@ -772,27 +798,22 @@ function generateId() {
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: '🚀 Anongram Server v8.0 (Full Supabase Integration)',
-    version: '8.0.0',
+    message: '🚀 Anongram Server v8.1 (Fixed Duplicates)',
+    version: '8.1.0',
     timestamp: new Date().toISOString(),
-    serverTime: Date.now(),
     features: [
       'supabase',
       'realtime_messages',
+      'no_duplicates',
       'reactions', 
       'editing',
       'pinning',
-      'media',
-      'polls',
-      'stickers',
-      'voice_messages',
-      'web_sockets',
-      'user_auth'
+      'media'
     ],
     stats: {
       connections: connectionStats.active,
       totalConnections: connectionStats.total,
-      uptime: process.uptime()
+      cachedMessages: sentMessageIds.size
     }
   });
 });
@@ -811,8 +832,10 @@ app.get('/api/health', async (req, res) => {
         active: connectionStats.active,
         total: connectionStats.total
       },
-      memory: process.memoryUsage(),
-      uptime: process.uptime()
+      cache: {
+        messages: sentMessageIds.size,
+        connections: userConnections.size
+      }
     });
   } catch (error) {
     res.status(500).json({
@@ -823,30 +846,13 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-// Проверка Supabase
-app.get('/api/health/supabase', async (req, res) => {
-  try {
-    const isConnected = await checkSupabaseConnection();
-    res.json({
-      success: isConnected,
-      message: isConnected ? 'Supabase подключен' : 'Supabase недоступен',
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: 'Ошибка проверки подключения'
-    });
-  }
-});
-
 // 💬 СООБЩЕНИЯ
 app.get('/api/messages/:chatId', async (req, res) => {
   const { chatId } = req.params;
   const { limit = 500 } = req.query;
   
   try {
-    console.log(`📥 API запрос сообщений для чата ${chatId}, лимит: ${limit}`);
+    console.log(`📥 API запрос сообщений для чата ${chatId}`);
     
     const messages = await getMessages(chatId, parseInt(limit));
     
@@ -879,7 +885,6 @@ app.get('/api/messages/:chatId/pinned', async (req, res) => {
       .order('pinned_at', { ascending: false });
 
     if (error) {
-      console.error('❌ Ошибка загрузки закрепленных:', error);
       return res.status(500).json({ success: false, error: error.message });
     }
 
@@ -889,19 +894,28 @@ app.get('/api/messages/:chatId/pinned', async (req, res) => {
       count: data?.length || 0
     });
   } catch (error) {
-    console.error('❌ Ошибка:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 app.post('/api/messages', async (req, res) => {
   try {
-    console.log('📤 API запрос отправки сообщения:', req.body.type);
-    await handleNewMessage(req.body);
+    console.log('📤 API запрос отправки сообщения');
+    
+    // Проверяем дубликат
+    if (req.body.id && sentMessageIds.has(req.body.id)) {
+      return res.json({
+        success: true,
+        messageId: req.body.id,
+        duplicate: true
+      });
+    }
+    
+    await handleNewMessage(req.body, null);
     
     res.json({
       success: true,
-      message: 'Сообщение отправлено',
+      messageId: req.body.id || generateId(),
       timestamp: new Date().toISOString()
     });
   } catch (error) {
@@ -925,13 +939,11 @@ app.delete('/api/messages/:messageId', async (req, res) => {
     const success = await deleteMessage(messageId);
 
     if (success) {
-      // Рассылаем уведомление о удалении
       broadcastToChat(chatId || 'general', {
         type: 'message_deleted',
         messageId: messageId,
         chatId: chatId,
-        deletedBy: userId,
-        serverTimestamp: Date.now()
+        deletedBy: userId
       });
 
       res.json({
@@ -961,8 +973,6 @@ app.put('/api/messages/:messageId', async (req, res) => {
   const { newText, userId, chatId } = req.body;
 
   try {
-    console.log('✏️ API запрос на редактирование сообщения:', messageId);
-
     const success = await updateMessage(messageId, newText, userId);
 
     if (success) {
@@ -971,8 +981,7 @@ app.put('/api/messages/:messageId', async (req, res) => {
         messageId: messageId,
         newText: newText,
         editedAt: new Date().toISOString(),
-        editedBy: userId,
-        serverTimestamp: Date.now()
+        editedBy: userId
       });
 
       res.json({
@@ -1002,12 +1011,9 @@ app.post('/api/messages/:messageId/reactions', async (req, res) => {
   const { userId, reaction, chatId } = req.body;
 
   try {
-    console.log('🎭 API запрос на добавление реакции:', { messageId, userId, reaction });
-
     const success = await addReaction(messageId, userId, reaction);
 
     if (success) {
-      // Получаем обновленные реакции
       const { data: message } = await supabase
         .from('messages')
         .select('reactions')
@@ -1019,8 +1025,7 @@ app.post('/api/messages/:messageId/reactions', async (req, res) => {
         messageId: messageId,
         reactions: message?.reactions || {},
         userId: userId,
-        reaction: reaction,
-        serverTimestamp: Date.now()
+        reaction: reaction
       });
 
       res.json({
@@ -1049,12 +1054,9 @@ app.delete('/api/messages/:messageId/reactions', async (req, res) => {
   const { userId, reaction, chatId } = req.body;
 
   try {
-    console.log('🎭 API запрос на удаление реакции:', { messageId, userId, reaction });
-
     const success = await removeReaction(messageId, userId, reaction);
 
     if (success) {
-      // Получаем обновленные реакции
       const { data: message } = await supabase
         .from('messages')
         .select('reactions')
@@ -1066,8 +1068,7 @@ app.delete('/api/messages/:messageId/reactions', async (req, res) => {
         messageId: messageId,
         reactions: message?.reactions || {},
         userId: userId,
-        reaction: reaction,
-        serverTimestamp: Date.now()
+        reaction: reaction
       });
 
       res.json({
@@ -1097,8 +1098,6 @@ app.post('/api/messages/:messageId/pin', async (req, res) => {
   const { chatId, userId } = req.body;
 
   try {
-    console.log('📍 API запрос на закрепление сообщения:', { messageId, userId });
-
     const success = await pinMessage(messageId, userId, chatId);
 
     if (success) {
@@ -1106,8 +1105,7 @@ app.post('/api/messages/:messageId/pin', async (req, res) => {
         type: 'message_pinned',
         messageId: messageId,
         chatId: chatId,
-        pinnedBy: userId,
-        serverTimestamp: Date.now()
+        pinnedBy: userId
       });
 
       res.json({
@@ -1136,8 +1134,6 @@ app.post('/api/messages/:messageId/unpin', async (req, res) => {
   const { chatId, userId } = req.body;
 
   try {
-    console.log('📍 API запрос на открепление сообщения:', { messageId, userId });
-
     const success = await unpinMessage(messageId);
 
     if (success) {
@@ -1145,8 +1141,7 @@ app.post('/api/messages/:messageId/unpin', async (req, res) => {
         type: 'message_unpinned',
         messageId: messageId,
         chatId: chatId,
-        unpinnedBy: userId,
-        serverTimestamp: Date.now()
+        unpinnedBy: userId
       });
 
       res.json({
@@ -1175,20 +1170,9 @@ app.post('/api/auth/check-code', async (req, res) => {
   const { code } = req.body;
 
   try {
-    console.log('🔍 Проверка кода доступа:', code);
-
-    if (!code) {
-      return res.status(400).json({
-        success: false,
-        error: 'Код обязателен'
-      });
-    }
-
     const user = await getUserByAccessCode(code);
 
     if (user) {
-      console.log('✅ Найден существующий пользователь:', user.username);
-      
       await updateUserLastSeen(user.id);
 
       res.json({
@@ -1208,7 +1192,6 @@ app.post('/api/auth/check-code', async (req, res) => {
         }
       });
     } else {
-      console.log('📝 Код свободен для регистрации');
       res.json({
         success: true,
         userExists: false,
@@ -1229,8 +1212,6 @@ app.post('/api/auth/register', async (req, res) => {
   const { username, code } = req.body;
 
   try {
-    console.log('📝 Регистрация пользователя:', { username, code });
-
     if (!username || !code) {
       return res.status(400).json({
         success: false,
@@ -1238,7 +1219,6 @@ app.post('/api/auth/register', async (req, res) => {
       });
     }
 
-    // Проверяем, занят ли никнейм
     const existingUsername = await getUserByUsername(username);
     if (existingUsername) {
       return res.status(400).json({
@@ -1247,7 +1227,6 @@ app.post('/api/auth/register', async (req, res) => {
       });
     }
 
-    // Проверяем, занят ли код
     const existingCode = await getUserByAccessCode(code);
     if (existingCode) {
       return res.status(400).json({
@@ -1279,7 +1258,6 @@ app.post('/api/auth/register', async (req, res) => {
     const savedUser = await createUser(userData);
 
     if (savedUser) {
-      console.log('✅ Пользователь создан:', username);
       res.json({
         success: true,
         user: {
@@ -1315,8 +1293,6 @@ app.post('/api/auth/login', async (req, res) => {
   const { code } = req.body;
 
   try {
-    console.log('🔐 Вход по коду:', code);
-
     if (!code) {
       return res.status(400).json({
         success: false,
@@ -1370,18 +1346,15 @@ app.get('/api/users', async (req, res) => {
       .limit(100);
 
     if (error) {
-      console.error('❌ Ошибка загрузки пользователей:', error);
       return res.status(500).json({ success: false, error: error.message });
     }
 
     res.json({
       success: true,
       users: data || [],
-      total: data?.length || 0,
-      timestamp: new Date().toISOString()
+      total: data?.length || 0
     });
   } catch (error) {
-    console.error('❌ Ошибка:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -1397,7 +1370,6 @@ app.get('/api/users/:userId', async (req, res) => {
       .single();
 
     if (error) {
-      console.error('❌ Ошибка загрузки пользователя:', error);
       return res.status(404).json({ success: false, error: 'Пользователь не найден' });
     }
 
@@ -1420,95 +1392,54 @@ app.get('/api/users/:userId', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('❌ Ошибка:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// 📊 ДЕБАГ
-app.get('/api/debug/messages', async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from('messages')
-      .select('*')
-      .limit(10);
-
-    if (error) {
-      console.error('❌ Ошибка получения сообщений:', error);
-      return res.status(500).json({ error: error.message });
-    }
-
-    res.json({
-      success: true,
-      count: data?.length || 0,
-      messages: data,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('❌ Ошибка debug:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/debug/connections', (req, res) => {
-  const connections = Array.from(activeConnections.entries()).map(([id, conn]) => ({
-    id,
-    ip: conn.ip,
-    connectedAt: conn.connectedAt,
-    duration: Date.now() - conn.connectedAt,
-    readyState: conn.ws.readyState
-  }));
-
+// Очистка кэша (для админов)
+app.post('/api/admin/clear-cache', (req, res) => {
+  sentMessageIds.clear();
+  userConnections.clear();
+  
   res.json({
     success: true,
-    connections: connections,
-    stats: connectionStats,
-    timestamp: Date.now()
+    message: 'Кэш очищен',
+    stats: {
+      messages: sentMessageIds.size,
+      connections: userConnections.size
+    }
   });
 });
 
 // 🚨 ЗАПУСК СЕРВЕРА
 server.listen(PORT, '0.0.0.0', async () => {
-  console.log('🚀 Anongram Server v8.0 запущен!');
+  console.log('🚀 Anongram Server v8.1 (Fixed Duplicates) запущен!');
   console.log(`📍 Порт: ${PORT}`);
   console.log(`🌐 URL: http://localhost:${PORT}`);
-  console.log(`🕒 Время запуска: ${new Date().toISOString()}`);
   
-  // Проверяем подключение к Supabase
   const supabaseConnected = await checkSupabaseConnection();
   if (supabaseConnected) {
-    console.log('✅ Supabase подключен и готов к работе');
-  } else {
-    console.log('⚠️  Supabase не подключен, некоторые функции могут не работать');
+    console.log('✅ Supabase подключен');
   }
   
   console.log('✅ Функции:');
-  console.log('   💬 Сохранение сообщений в Supabase');
-  console.log('   👤 Аутентификация пользователей');
-  console.log('   🎭 Система реакций');
-  console.log('   ✏️  Редактирование сообщений');
-  console.log('   🗑️  Удаление сообщений');
-  console.log('   📍 Закрепление сообщений');
-  console.log('   📊 Медиа и файлы');
-  console.log('   📱 WebSocket в реальном времени');
-  console.log('   🌐 CORS включен');
-  console.log('🌐 Готов к работе!');
+  console.log('   💬 Без дубликатов сообщений');
+  console.log('   🔄 WebSocket без рассылки отправителю');
+  console.log('   🗃️  Кэш ID сообщений');
+  console.log('   👥 Отслеживание пользователей');
 });
 
-// Обработка ошибок
 process.on('uncaughtException', (error) => {
   console.error('❌ Необработанное исключение:', error);
 });
 
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason) => {
   console.error('❌ Необработанный промис:', reason);
 });
 
-// Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('🔄 Получен SIGTERM, завершение работы...');
   
-  // Закрываем WebSocket соединения
   wss.clients.forEach(client => {
     if (client.readyState === WebSocket.OPEN) {
       client.close(1000, 'Server shutdown');
